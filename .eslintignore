@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+
+# Logs
+logs/
+*.log
+
+# Coverage
+coverage/
+
+# Temporary files
+tmp/
+temp/
+
+# Configuration files
+*.config.js
+!jest.config.js
+
+# Generated files
+*.min.js
+
+# Storage directories
+storage/
+
+# Docker files
+Dockerfile*

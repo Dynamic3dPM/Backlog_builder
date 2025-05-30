@@ -1,0 +1,296 @@
+version: '3.8'
+
+services:
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - LOCAL_STT_URL=http://ai-stt-local:8001
+      - LOCAL_LLM_URL=http://ai-llm-local:8003
+      # CLOUD SERVICES TEMPORARILY DISABLED
+      # - CLOUD_STT_URL=http://ai-stt-cloud:8002
+      # - CLOUD_LLM_URL=http://ai-llm-cloud:8004
+      - PREFER_LOCAL_AI=true
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://backlog_user:${POSTGRES_PASSWORD}@postgres:5432/backlog_builder
+    volumes:
+      - uploads:/app/uploads
+    depends_on:
+      - redis
+      - postgres
+      - ai-stt-local
+      - ai-llm-local
+      # CLOUD SERVICES TEMPORARILY DISABLED
+      # - ai-stt-cloud
+      # - ai-llm-cloud
+    networks:
+      - backlog-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Local Speech-to-Text Service (Optional for GPU nodes)
+  ai-stt-local:
+    build:
+      context: ./ai-services
+      dockerfile: Dockerfile.ai
+      target: whisper-service
+    ports:
+      - "8001:8001"
+    environment:
+      - MODEL_CACHE_DIR=/app/models
+      - TORCH_HOME=/app/models
+      - HF_HOME=/app/models
+      - TRANSFORMERS_CACHE=/app/models
+    volumes:
+      - ai-models:/app/models
+      - uploads:/app/uploads:ro
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - backlog-network
+    restart: unless-stopped
+    profiles:
+      - gpu
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+
+  # CLOUD SERVICES TEMPORARILY DISABLED
+  # Cloud Speech-to-Text Service
+  # ai-stt-cloud:
+  #   build:
+  #     context: ./ai-services/speech-to-text
+  #     dockerfile: Dockerfile.cloud
+  #   ports:
+  #     - "8002:8002"
+  #   environment:
+  #     - NODE_ENV=production
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
+  #     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+  #     - AZURE_SPEECH_KEY=${AZURE_SPEECH_KEY}
+  #     - AZURE_SPEECH_REGION=${AZURE_SPEECH_REGION}
+  #     - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+  #     - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+  #     - AWS_REGION=${AWS_REGION}
+  #     - REDIS_URL=redis://redis:6379
+  #   volumes:
+  #     - uploads:/app/uploads:ro
+  #   depends_on:
+  #     - redis
+  #   networks:
+  #     - backlog-network
+  #   restart: unless-stopped
+  #   deploy:
+  #     replicas: 2
+  #     resources:
+  #       limits:
+  #         memory: 2G
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+
+  # Local LLM Processing Service (Optional for GPU nodes)
+  ai-llm-local:
+    build:
+      context: ./ai-services
+      dockerfile: Dockerfile.ai
+      target: llm-service
+    ports:
+      - "8003:8003"
+    environment:
+      - MODEL_CACHE_DIR=/app/models
+      - TORCH_HOME=/app/models
+      - HF_HOME=/app/models
+      - TRANSFORMERS_CACHE=/app/models
+      - PROMPT_TEMPLATES_PATH=/app/prompt-templates.json
+    volumes:
+      - ai-models:/app/models
+      - ./ai-services/llm-processing/prompt-templates.json:/app/prompt-templates.json:ro
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks:
+      - backlog-network
+    restart: unless-stopped
+    profiles:
+      - gpu
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+
+  # CLOUD SERVICES TEMPORARILY DISABLED  
+  # Cloud LLM Processing Service
+  # ai-llm-cloud:
+  #   build:
+  #     context: ./ai-services/llm-processing
+  #     dockerfile: Dockerfile.cloud
+  #   ports:
+  #     - "8004:8004"
+  #   environment:
+  #     - NODE_ENV=production
+  #     - OPENAI_API_KEY=${OPENAI_API_KEY}
+  #     - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+  #     - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+  #     - PROMPT_TEMPLATES_PATH=/app/prompt-templates.json
+  #     - REDIS_URL=redis://redis:6379
+  #   volumes:
+  #     - ./ai-services/llm-processing/prompt-templates.json:/app/prompt-templates.json:ro
+  #   depends_on:
+  #     - redis
+  #   networks:
+  #     - backlog-network
+  #   restart: unless-stopped
+  #   deploy:
+  #     replicas: 2
+  #     resources:
+  #       limits:
+  #         memory: 2G
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+
+  # Redis for caching and job queues
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    networks:
+      - backlog-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # PostgreSQL for persistent data storage
+  postgres:
+    image: postgres:15
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_DB=backlog_builder
+      - POSTGRES_USER=backlog_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_INITDB_ARGS=--auth-host=scram-sha-256
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - backlog-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "backlog_user", "-d", "backlog_builder"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx reverse proxy and load balancer
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - uploads:/var/www/uploads:ro
+    depends_on:
+      - backend
+    networks:
+      - backlog-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Monitoring with Prometheus
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.wal-compression'
+    networks:
+      - backlog-network
+    restart: unless-stopped
+
+  # Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    networks:
+      - backlog-network
+    restart: unless-stopped
+
+volumes:
+  ai-models:
+    driver: local
+  uploads:
+    driver: local
+  redis-data:
+    driver: local
+  postgres-data:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+networks:
+  backlog-network:
+    driver: bridge

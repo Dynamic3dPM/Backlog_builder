@@ -1,0 +1,144 @@
+# Backlog Builder AI Services Container
+# Multi-stage build for optimized production image with GPU support
+
+# Stage 1: Base image with CUDA support
+FROM nvidia/cuda:12.1-devel-ubuntu22.04 as base
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV NODE_VERSION=18.19.0
+ENV PYTHON_VERSION=3.11
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    wget \
+    curl \
+    git \
+    build-essential \
+    ffmpeg \
+    libsndfile1 \
+    libasound2-dev \
+    portaudio19-dev \
+    python3.11 \
+    python3.11-dev \
+    python3-pip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+
+# Create non-root user for security
+RUN useradd -m -s /bin/bash aiuser && \
+    usermod -aG audio aiuser
+
+# Set working directory
+WORKDIR /app
+
+# Stage 2: Python dependencies and model caching
+FROM base as python-setup
+
+# Copy Python requirements
+COPY speech-to-text/requirements.txt /app/stt-requirements.txt
+COPY llm-processing/requirements.txt /app/llm-requirements.txt
+
+# Install Python dependencies
+RUN pip3 install --upgrade pip setuptools wheel && \
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 && \
+    pip3 install -r /app/stt-requirements.txt && \
+    pip3 install -r /app/llm-requirements.txt
+
+# Pre-download and cache Whisper models
+RUN python3 -c "import whisper; whisper.load_model('base')" && \
+    python3 -c "import whisper; whisper.load_model('small')" && \
+    python3 -c "import whisper; whisper.load_model('medium')"
+
+# Pre-download and cache Hugging Face models
+RUN python3 -c "from transformers import pipeline; pipeline('summarization', model='facebook/bart-large-cnn')" && \
+    python3 -c "from transformers import pipeline; pipeline('text-classification', model='cardiffnlp/twitter-roberta-base-sentiment-latest')" && \
+    python3 -c "from transformers import AutoTokenizer, AutoModel; AutoTokenizer.from_pretrained('sentence-transformers/all-MiniLM-L6-v2'); AutoModel.from_pretrained('sentence-transformers/all-MiniLM-L6-v2')"
+
+# Stage 3: Node.js dependencies
+FROM python-setup as node-setup
+
+# Copy Node.js package files (create them if they don't exist)
+RUN mkdir -p /app/speech-to-text /app/llm-processing
+
+# Create basic package.json files if they don't exist
+RUN echo '{"name": "stt-cloud", "version": "1.0.0", "dependencies": {"express": "^4.18.0", "multer": "^1.4.5", "cors": "^2.8.5", "dotenv": "^16.0.0", "@google-cloud/speech": "^6.0.0", "axios": "^1.6.0", "ws": "^8.14.0"}}' > /app/speech-to-text/package.json
+RUN echo '{"name": "llm-cloud", "version": "1.0.0", "dependencies": {"express": "^4.18.0", "cors": "^2.8.5", "dotenv": "^16.0.0", "openai": "^4.20.0", "axios": "^1.6.0", "node-cache": "^5.1.0"}}' > /app/llm-processing/package.json
+
+# Install Node.js dependencies
+RUN cd /app/speech-to-text && npm install && \
+    cd /app/llm-processing && npm install
+
+# Stage 4: Final production image
+FROM python-setup as production
+
+# Copy Node.js from previous stage
+COPY --from=node-setup /usr/bin/node /usr/bin/node
+COPY --from=node-setup /usr/bin/npm /usr/bin/npm
+COPY --from=node-setup /app/speech-to-text/node_modules /app/speech-to-text/node_modules
+COPY --from=node-setup /app/llm-processing/node_modules /app/llm-processing/node_modules
+COPY --from=node-setup /app/speech-to-text/package.json /app/speech-to-text/package.json
+COPY --from=node-setup /app/llm-processing/package.json /app/llm-processing/package.json
+
+# Copy application code
+COPY speech-to-text/ /app/speech-to-text/
+COPY llm-processing/ /app/llm-processing/
+
+# Create necessary directories
+RUN mkdir -p /app/models /app/cache /app/logs /app/uploads /app/processed && \
+    chown -R aiuser:aiuser /app
+
+# Create startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting Backlog Builder AI Services..."\n\
+\n\
+# Start Python STT service\n\
+cd /app/speech-to-text\n\
+python3 whisper-local.py &\n\
+STT_PID=$!\n\
+\n\
+# Start Python LLM service\n\
+cd /app/llm-processing\n\
+python3 huggingface-local.py &\n\
+LLM_PID=$!\n\
+\n\
+# Start Node.js cloud services\n\
+cd /app/speech-to-text\n\
+node cloud-stt.js &\n\
+CLOUD_STT_PID=$!\n\
+\n\
+cd /app/llm-processing\n\
+node cloud-llm.js &\n\
+CLOUD_LLM_PID=$!\n\
+\n\
+# Wait for any process to exit\n\
+wait -n\n\
+\n\
+# Kill all processes if one exits\n\
+kill $STT_PID $LLM_PID $CLOUD_STT_PID $CLOUD_LLM_PID 2>/dev/null\n\
+exit 1' > /app/start.sh && chmod +x /app/start.sh
+
+# Switch to non-root user
+USER aiuser
+
+# Expose ports
+EXPOSE 8001 8002 8003 8004
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8001/health && \
+        curl -f http://localhost:8002/health && \
+        curl -f http://localhost:8003/health && \
+        curl -f http://localhost:8004/health || exit 1
+
+# Volume mounts for persistence
+VOLUME ["/app/models", "/app/cache", "/app/logs"]
+
+# Start all services
+CMD ["/app/start.sh"]

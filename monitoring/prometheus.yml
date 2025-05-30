@@ -1,0 +1,72 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - "rules/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          - alertmanager:9093
+
+scrape_configs:
+  # Backend API
+  - job_name: 'backend'
+    static_configs:
+      - targets: ['backend:3000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # AI Services
+  - job_name: 'ai-stt-local'
+    static_configs:
+      - targets: ['ai-stt-local:8001']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # CLOUD SERVICES TEMPORARILY DISABLED
+  # - job_name: 'ai-stt-cloud'
+  #   static_configs:
+  #     - targets: ['ai-stt-cloud:8002']
+  #   metrics_path: '/metrics'
+  #   scrape_interval: 30s
+
+  - job_name: 'ai-llm-local'
+    static_configs:
+      - targets: ['ai-llm-local:8003']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # CLOUD SERVICES TEMPORARILY DISABLED
+  # - job_name: 'ai-llm-cloud'
+  #   static_configs:
+  #     - targets: ['ai-llm-cloud:8004']
+  #   metrics_path: '/metrics'
+  #   scrape_interval: 30s
+
+  # Infrastructure
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis:6379']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Node exporter for system metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: ['node-exporter:9100']
+    scrape_interval: 30s
+
+  # Docker metrics
+  - job_name: 'docker'
+    static_configs:
+      - targets: ['host.docker.internal:9323']
+    scrape_interval: 30s

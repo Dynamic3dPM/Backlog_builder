@@ -1,0 +1,133 @@
+{
+  "version": "1.0",
+  "last_updated": "2025-05-30",
+  "templates": {
+    "meeting_summarization": {
+      "executive_summary": {
+        "simple": {
+          "prompt": "Summarize the following meeting transcript in 2-3 sentences focusing on key decisions and outcomes:\n\n{{transcript}}\n\nSummary:",
+          "max_tokens": 150,
+          "temperature": 0.3
+        },
+        "detailed": {
+          "prompt": "Create a comprehensive executive summary of this meeting transcript. Include:\n1. Meeting purpose and attendees\n2. Key decisions made\n3. Important outcomes\n4. Next steps\n\nTranscript:\n{{transcript}}\n\nExecutive Summary:",
+          "max_tokens": 500,
+          "temperature": 0.3
+        }
+      },
+      "technical_discussion": {
+        "simple": {
+          "prompt": "Extract and summarize the technical points discussed in this meeting:\n\n{{transcript}}\n\nTechnical Summary:",
+          "max_tokens": 300,
+          "temperature": 0.2
+        },
+        "detailed": {
+          "prompt": "Analyze this technical meeting transcript and provide:\n1. Technical topics discussed\n2. Solutions proposed\n3. Technical decisions made\n4. Implementation details mentioned\n5. Technical challenges identified\n\nTranscript:\n{{transcript}}\n\nTechnical Analysis:",
+          "max_tokens": 600,
+          "temperature": 0.2
+        }
+      }
+    },
+    "action_item_extraction": {
+      "task_identification": {
+        "simple": {
+          "prompt": "Extract action items from this meeting transcript. For each action item, identify:\n- Task description\n- Assigned person\n- Deadline (if mentioned)\n\nTranscript:\n{{transcript}}\n\nAction Items (JSON format):",
+          "max_tokens": 400,
+          "temperature": 0.1,
+          "output_format": "json"
+        },
+        "detailed": {
+          "prompt": "Analyze this meeting transcript and extract comprehensive action items. For each item provide:\n- Detailed task description\n- Assigned person/team\n- Deadline or timeline\n- Priority level (High/Medium/Low)\n- Dependencies on other tasks\n- Success criteria\n\nTranscript:\n{{transcript}}\n\nPlease format as JSON array with objects containing: task, assignee, deadline, priority, dependencies, success_criteria\n\nAction Items:",
+          "max_tokens": 800,
+          "temperature": 0.1,
+          "output_format": "json"
+        }
+      },
+      "deadline_extraction": {
+        "prompt": "Extract all mentioned deadlines, dates, and timelines from this meeting transcript:\n\n{{transcript}}\n\nReturn as JSON with format: {\"deadlines\": [{\"task\": \"description\", \"date\": \"YYYY-MM-DD\", \"urgency\": \"high/medium/low\"}]}",
+        "max_tokens": 300,
+        "temperature": 0.1,
+        "output_format": "json"
+      }
+    },
+    "ticket_generation": {
+      "user_story": {
+        "agile": {
+          "prompt": "Convert this action item into a well-formatted user story:\n\nAction Item: {{action_item}}\nContext: {{context}}\n\nCreate a user story following this format:\n**Title:** [Concise title]\n**As a** [user type]\n**I want** [goal]\n**So that** [benefit]\n\n**Acceptance Criteria:**\n- [ ] Criterion 1\n- [ ] Criterion 2\n- [ ] Criterion 3\n\n**Additional Details:**\n[Any relevant technical details or constraints]\n\nUser Story:",
+          "max_tokens": 400,
+          "temperature": 0.3
+        }
+      },
+      "bug_report": {
+        "standard": {
+          "prompt": "Convert this issue into a structured bug report:\n\nIssue: {{issue_description}}\nContext: {{context}}\n\nCreate a bug report with:\n**Title:** [Clear, specific title]\n**Priority:** [High/Medium/Low]\n**Description:** [Detailed description]\n**Steps to Reproduce:**\n1. Step 1\n2. Step 2\n3. Step 3\n\n**Expected Behavior:** [What should happen]\n**Actual Behavior:** [What actually happens]\n**Environment:** [Relevant environment details]\n\nBug Report:",
+          "max_tokens": 500,
+          "temperature": 0.2
+        }
+      },
+      "feature_request": {
+        "detailed": {
+          "prompt": "Transform this feature idea into a comprehensive feature request:\n\nFeature Idea: {{feature_description}}\nBusiness Context: {{context}}\n\n**Feature Request:**\n**Title:** [Clear feature title]\n**Priority:** [High/Medium/Low]\n**Business Value:** [Why this feature is needed]\n**User Impact:** [How users will benefit]\n**Functional Requirements:**\n- Requirement 1\n- Requirement 2\n- Requirement 3\n\n**Technical Considerations:**\n[Any technical notes or constraints]\n\n**Success Metrics:**\n[How success will be measured]\n\nFeature Request:",
+          "max_tokens": 600,
+          "temperature": 0.3
+        }
+      }
+    },
+    "classification": {
+      "meeting_type": {
+        "prompt": "Classify this meeting transcript into one of these categories:\n- STANDUP (daily standup, brief status updates)\n- PLANNING (sprint planning, project planning)\n- RETROSPECTIVE (team retrospective, lessons learned)\n- TECHNICAL (technical discussion, architecture review)\n- BUSINESS (business review, stakeholder meeting)\n- DECISION (decision-making meeting)\n- BRAINSTORM (brainstorming, ideation session)\n- OTHER\n\nTranscript:\n{{transcript}}\n\nClassification (single word):",
+        "max_tokens": 50,
+        "temperature": 0.1
+      },
+      "urgency_assessment": {
+        "prompt": "Assess the urgency level of this meeting content on a scale:\n- CRITICAL (immediate action required, blocking issues)\n- HIGH (action needed within 1-2 days)\n- MEDIUM (action needed within a week)\n- LOW (no immediate action required)\n\nConsider factors like:\n- Deadlines mentioned\n- Blocking issues\n- Business impact\n- Resource availability\n\nMeeting Content:\n{{transcript}}\n\nUrgency Level:",
+        "max_tokens": 100,
+        "temperature": 0.1
+      },
+      "project_categorization": {
+        "prompt": "Categorize this meeting content by project/team area:\n\nAvailable categories:\n{{categories}}\n\nMeeting content:\n{{transcript}}\n\nReturn the most relevant category and confidence score (0-1):\nFormat: {\"category\": \"category_name\", \"confidence\": 0.95, \"reasoning\": \"brief explanation\"}",
+        "max_tokens": 150,
+        "temperature": 0.2,
+        "output_format": "json"
+      }
+    },
+    "quality_assessment": {
+      "confidence_scoring": {
+        "prompt": "Assess the confidence level of extracted information from this meeting transcript:\n\nTranscript quality indicators:\n- Audio clarity\n- Speaker identification\n- Complete sentences\n- Context clarity\n\nExtracted content:\n{{extracted_content}}\n\nProvide confidence scores (0-1) for:\n- Transcript accuracy\n- Action item completeness\n- Decision clarity\n- Overall reliability\n\nFormat as JSON:",
+        "max_tokens": 200,
+        "temperature": 0.1,
+        "output_format": "json"
+      }
+    }
+  },
+  "variables": {
+    "common": [
+      "transcript",
+      "action_item",
+      "context",
+      "issue_description",
+      "feature_description",
+      "categories",
+      "extracted_content"
+    ],
+    "formatting": {
+      "date_format": "YYYY-MM-DD",
+      "priority_levels": ["High", "Medium", "Low"],
+      "urgency_levels": ["CRITICAL", "HIGH", "MEDIUM", "LOW"]
+    }
+  },
+  "settings": {
+    "default_temperature": 0.3,
+    "default_max_tokens": 500,
+    "retry_attempts": 3,
+    "timeout_seconds": 30
+  },
+  "a_b_testing": {
+    "enabled": true,
+    "variants": {
+      "summarization_style": ["concise", "detailed"],
+      "formality_level": ["casual", "professional"],
+      "technical_depth": ["basic", "advanced"]
+    }
+  }
+}

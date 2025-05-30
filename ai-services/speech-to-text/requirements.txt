@@ -1,0 +1,55 @@
+# Backlog Builder Speech-to-Text Service Dependencies
+# Core ML and Audio Processing
+openai-whisper==20231117
+torch>=2.1.0
+torchaudio>=2.1.0
+transformers>=4.35.0
+
+# FastAPI and Web Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+websockets==12.0
+
+# Audio Processing Libraries
+librosa==0.10.1
+pydub==0.25.1
+soundfile==0.12.1
+pyaudio==0.2.11
+numpy>=1.24.0
+scipy>=1.11.0
+
+# File Handling and Validation
+python-magic==0.4.27
+validators==0.22.0
+aiofiles==23.2.1
+
+# Speech Processing and NLP
+speechrecognition==3.10.0
+pyannote.audio==3.1.1
+webrtcvad==2.0.10
+
+# Logging and Monitoring
+loguru==0.7.2
+prometheus-client==0.19.0
+
+# Caching and Performance
+redis==5.0.1
+orjson==3.9.10
+memory-profiler==0.61.0
+
+# HTTP Client and Utilities
+httpx==0.25.2
+python-dotenv==1.0.0
+pydantic==2.5.0
+typing-extensions>=4.8.0
+
+# GPU Acceleration (Optional)
+accelerate>=0.24.0
+optimum>=1.15.0
+
+# Development and Testing (Optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.11.0
+isort==5.12.0
