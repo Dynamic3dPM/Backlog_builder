@@ -257,13 +257,48 @@ class AIController {
     }
 
     /**
-     * Generate tickets from existing action items
+     * Generate tickets from existing action items or analysis
      */
     async generateTickets(req, res) {
         try {
-            const { actionItems, projectId, context } = req.body;
+            const { 
+                actionItems, 
+                analysis, 
+                projectId, 
+                context, 
+                project, 
+                template 
+            } = req.body;
 
-            if (!Array.isArray(actionItems) || actionItems.length === 0) {
+            let items = actionItems;
+            let analysisData = analysis;
+            let projectIdentifier = projectId || project;
+            
+            // Handle nested analysis format (e.g., from /api/ai/analyze response)
+            if (analysis && !actionItems) {
+                items = analysis.actionItems;
+                analysisData = analysis;
+            }
+
+            // If using full analysis object, use the comprehensive ticket generator
+            if (analysisData && (analysisData.actionItems || analysisData.decisions || analysisData.summary)) {
+                const ticketResults = await ticketGeneratorService.generateTickets(analysisData, {
+                    projectId: projectIdentifier,
+                    templateId: template,
+                    context: context || analysisData.summary
+                });
+
+                return res.json({
+                    success: ticketResults.success,
+                    tickets: ticketResults.tickets,
+                    summary: ticketResults.summary,
+                    metadata: ticketResults.metadata,
+                    processing_time: Date.now() - req.startTime
+                });
+            }
+
+            // Handle simple action items array format
+            if (!Array.isArray(items) || items.length === 0) {
                 return res.status(400).json({
                     error: 'Action items array is required',
                     code: 'MISSING_ACTION_ITEMS'
@@ -271,8 +306,8 @@ class AIController {
             }
 
             const ticketResults = await ticketGeneratorService.generateTicketsFromActionItems(
-                actionItems,
-                { projectId, context }
+                items,
+                { projectId: projectIdentifier, context }
             );
 
             if (!ticketResults.success) {

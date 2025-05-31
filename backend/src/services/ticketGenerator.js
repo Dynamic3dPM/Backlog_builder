@@ -666,6 +666,70 @@ class TicketGeneratorService {
 
         return null;
     }
+
+    /**
+     * Generate tickets from action items array (simplified interface)
+     * @param {Array} actionItems - Array of action item strings
+     * @param {Object} options - Options for ticket generation
+     * @returns {Object} Result with tickets and metadata
+     */
+    async generateTicketsFromActionItems(actionItems, options = {}) {
+        try {
+            if (!Array.isArray(actionItems) || actionItems.length === 0) {
+                return {
+                    success: false,
+                    error: 'Action items array is required and cannot be empty',
+                    tickets: []
+                };
+            }
+
+            const { projectId, context, template } = options;
+            
+            // Convert simple action items to enriched format
+            const enrichedActionItems = actionItems.map((item, index) => ({
+                content: typeof item === 'string' ? item : item.content || item.description || item,
+                assignee: typeof item === 'object' ? item.assignee : null,
+                priority: typeof item === 'object' ? item.priority : 'Medium',
+                dueDate: typeof item === 'object' ? item.dueDate : null,
+                context: context || '',
+                confidence: typeof item === 'object' ? item.confidence : 0.8
+            }));
+
+            // Generate tickets using the main method
+            const analysisResult = {
+                actionItems: enrichedActionItems,
+                summary: context ? { executiveSummary: context } : null,
+                decisions: [],
+                metadata: {
+                    projectId,
+                    template
+                }
+            };
+
+            const result = await this.generateTickets(analysisResult, {
+                includeActionItems: true,
+                includeDecisions: false,
+                includeSummaryTicket: false,
+                projectId
+            });
+
+            return {
+                success: true,
+                tickets: result.tickets,
+                summary: result.summary,
+                metadata: result.metadata,
+                processing_time: result.processing_time
+            };
+
+        } catch (error) {
+            console.error('Error generating tickets from action items:', error);
+            return {
+                success: false,
+                error: error.message,
+                tickets: []
+            };
+        }
+    }
 }
 
 module.exports = new TicketGeneratorService();
