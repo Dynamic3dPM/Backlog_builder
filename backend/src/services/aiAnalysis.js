@@ -86,7 +86,19 @@ class AIAnalysisService {
      * Analyze with local LLM service
      */
     async analyzeWithLocal(request) {
-        const response = await axios.post(`${this.localLLMUrl}/analyze`, request, {
+        // Convert backend request format to LLM service format
+        const llmRequest = {
+            transcript: request.transcription,
+            meeting_type: request.options?.meetingType || 'general',
+            language: request.options?.language || 'en',
+            extract_action_items: request.options?.includeActionItems !== false,
+            extract_decisions: request.options?.includeDecisions !== false,
+            generate_summary: request.options?.includeSummary !== false,
+            detect_sentiment: request.options?.detectSentiment || false,
+            identify_speakers: request.options?.identifySpeakers || false
+        };
+
+        const response = await axios.post(`${this.localLLMUrl}/analyze`, llmRequest, {
             headers: {
                 'Content-Type': 'application/json'
             },
@@ -114,34 +126,54 @@ class AIAnalysisService {
      * Generate specific analysis components
      */
     async generateComponent(transcription, componentType, options = {}) {
-        const request = {
-            transcription,
-            componentType,
-            options
-        };
-
         try {
+            // Prepare request for the /analyze endpoint
+            const analysisRequest = {
+                transcript: transcription,
+                meeting_type: options.meetingType || 'general',
+                language: options.language || 'en',
+                extract_action_items: componentType === 'action-items',
+                extract_decisions: componentType === 'decisions',
+                generate_summary: componentType === 'summary',
+                detect_sentiment: false,
+                identify_speakers: false
+            };
+
             // Try local service only (cloud disabled)
             try {
-                const response = await axios.post(`${this.localLLMUrl}/generate/${componentType}`, request, {
+                const response = await axios.post(`${this.localLLMUrl}/analyze`, analysisRequest, {
                     headers: { 'Content-Type': 'application/json' },
                     timeout: this.timeout
                 });
-                return { success: true, provider: 'local', ...response.data };
+
+                // Extract the specific component from the response
+                const analysisResult = response.data;
+                let componentResult;
+
+                switch (componentType) {
+                    case 'action-items':
+                        componentResult = analysisResult.action_items || [];
+                        break;
+                    case 'summary':
+                        componentResult = analysisResult.summary || null;
+                        break;
+                    case 'decisions':
+                        componentResult = analysisResult.decisions || [];
+                        break;
+                    default:
+                        throw new Error(`Unknown component type: ${componentType}`);
+                }
+
+                return { 
+                    success: true, 
+                    provider: 'local', 
+                    [componentType.replace('-', '_')]: componentResult,
+                    processing_time: analysisResult.processing_time
+                };
             } catch (localError) {
                 console.error(`Local ${componentType} generation failed:`, localError.message);
                 throw new Error(`${componentType} generation failed: ${localError.message}. Cloud services are temporarily disabled.`);
             }
-
-            /* CLOUD FALLBACK TEMPORARILY DISABLED
-            // Fallback to cloud
-            const response = await axios.post(`${this.cloudLLMUrl}/generate/${componentType}`, request, {
-                headers: { 'Content-Type': 'application/json' },
-                timeout: this.timeout
-            });
-            
-            return { success: true, provider: 'cloud', ...response.data };
-            */ // END CLOUD FALLBACK TEMPORARILY DISABLED
 
         } catch (error) {
             console.error(`${componentType} generation failed:`, error);
@@ -294,6 +326,7 @@ class AIAnalysisService {
      */
     formatLocalResponse(data) {
         return {
+            success: true,
             summary: data.summary,
             actionItems: data.action_items || [],
             decisions: data.decisions || [],

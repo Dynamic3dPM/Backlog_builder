@@ -142,3 +142,43 @@ VOLUME ["/app/models", "/app/cache", "/app/logs"]
 
 # Start all services
 CMD ["/app/start.sh"]
+
+# Stage 5: Whisper-specific service
+FROM production as whisper-service
+
+# Create whisper-specific startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting Whisper STT Service..."\n\
+cd /app/speech-to-text\n\
+python3 whisper-local.py' > /app/start-whisper.sh && chmod +x /app/start-whisper.sh
+
+# Expose only STT port
+EXPOSE 8001
+
+# Health check for whisper service only
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Start whisper service
+CMD ["/app/start-whisper.sh"]
+
+# Stage 6: LLM-specific service  
+FROM production as llm-service
+
+# Create LLM-specific startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting LLM Processing Service..."\n\
+cd /app/llm-processing\n\
+python3 huggingface-local.py' > /app/start-llm.sh && chmod +x /app/start-llm.sh
+
+# Expose only LLM port
+EXPOSE 8003
+
+# Health check for LLM service only
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8003/health || exit 1
+
+# Start LLM service
+CMD ["/app/start-llm.sh"]

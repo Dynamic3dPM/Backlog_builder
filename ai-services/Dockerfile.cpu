@@ -1,0 +1,118 @@
+# Backlog Builder AI Services Container - CPU Only Version
+# Multi-stage build for optimized production image without GPU requirements
+
+# Stage 1: Base image without CUDA
+FROM python:3.11-slim-bullseye as base
+
+# Set environment variables
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV NODE_VERSION=18.19.0
+ENV PYTHON_VERSION=3.11
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    wget \
+    curl \
+    git \
+    build-essential \
+    ffmpeg \
+    libsndfile1 \
+    libasound2-dev \
+    portaudio19-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js
+RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - \
+    && apt-get install -y nodejs
+
+# Create non-root user for security
+RUN useradd -m -s /bin/bash aiuser && \
+    usermod -aG audio aiuser
+
+# Set working directory
+WORKDIR /app
+
+# Stage 2: Python dependencies and model caching
+FROM base as python-setup
+
+# Copy Python requirements
+COPY speech-to-text/requirements.txt /app/stt-requirements.txt
+COPY llm-processing/requirements.txt /app/llm-requirements.txt
+
+# Install Python dependencies (CPU-only versions)
+RUN pip3 install --upgrade pip setuptools wheel && \
+    pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu && \
+    pip3 install -r /app/stt-requirements.txt && \
+    pip3 install -r /app/llm-requirements.txt
+
+# Stage 3: Application setup
+FROM python-setup as app-setup
+
+# Copy application code
+COPY speech-to-text/ /app/speech-to-text/
+COPY llm-processing/ /app/llm-processing/
+
+# Create necessary directories
+RUN mkdir -p /app/models /app/uploads /app/logs && \
+    chown -R aiuser:aiuser /app
+
+# Switch to non-root user
+USER aiuser
+
+# Stage 4: Production image
+FROM app-setup as production
+
+# Copy startup scripts
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Pre-downloading models for faster startup..."\n\
+python3 -c "import whisper; whisper.load_model(\"base\")" || echo "Whisper model download failed, will download on first use"\n\
+python3 -c "from transformers import pipeline; pipeline(\"summarization\", model=\"facebook/bart-large-cnn\")" || echo "BART model download failed, will download on first use"\n\
+echo "Model pre-download complete"' > /app/download-models.sh && chmod +x /app/download-models.sh
+
+# Set environment variables for CPU optimization
+ENV OMP_NUM_THREADS=4
+ENV MKL_NUM_THREADS=4
+ENV TORCH_NUM_THREADS=4
+
+# Stage 5: Whisper-specific service
+FROM production as whisper-service
+
+# Create whisper-specific startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting Whisper STT Service (CPU)..."\n\
+cd /app/speech-to-text\n\
+python3 whisper-local.py' > /app/start-whisper.sh && chmod +x /app/start-whisper.sh
+
+# Expose only STT port
+EXPOSE 8001
+
+# Health check for whisper service only
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8001/health || exit 1
+
+# Start whisper service
+CMD ["/app/start-whisper.sh"]
+
+# Stage 6: LLM-specific service  
+FROM production as llm-service
+
+# Create LLM-specific startup script
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "Starting LLM Processing Service (CPU)..."\n\
+cd /app/llm-processing\n\
+python3 huggingface-local.py' > /app/start-llm.sh && chmod +x /app/start-llm.sh
+
+# Expose only LLM port
+EXPOSE 8003
+
+# Health check for LLM service only
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8003/health || exit 1
+
+# Start LLM service
+CMD ["/app/start-llm.sh"]

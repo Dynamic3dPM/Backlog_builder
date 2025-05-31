@@ -1,0 +1,430 @@
+{
+  "info": {
+    "name": "Backlog Builder API",
+    "description": "Complete API collection for testing Backlog Builder endpoints",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health Checks",
+      "item": [
+        {
+          "name": "Backend Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        },
+        {
+          "name": "AI Service Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "health"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "AI Services Status",
+      "item": [
+        {
+          "name": "Get AI Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "status"]
+            }
+          }
+        },
+        {
+          "name": "Get AI Providers",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/providers",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "providers"]
+            }
+          }
+        },
+        {
+          "name": "Test AI Providers",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providers\": [\"local\"]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/providers/test",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "providers", "test"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Audio Processing",
+      "item": [
+        {
+          "name": "Transcribe Audio",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "audio",
+                  "type": "file",
+                  "src": "",
+                  "description": "Upload an audio file (mp3, wav, m4a, etc.)"
+                },
+                {
+                  "key": "options",
+                  "value": "{\"language\": \"en\", \"enableDiarization\": true}",
+                  "type": "text",
+                  "description": "Processing options (optional)"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/transcribe",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "transcribe"]
+            }
+          }
+        },
+        {
+          "name": "Process Audio Complete",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "audio",
+                  "type": "file",
+                  "src": "",
+                  "description": "Upload an audio file"
+                },
+                {
+                  "key": "project",
+                  "value": "sample-project",
+                  "type": "text"
+                },
+                {
+                  "key": "options",
+                  "value": "{\"generateTickets\": true, \"extractActionItems\": true}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/process-audio",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "process-audio"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Meeting Analysis",
+      "item": [
+        {
+          "name": "Analyze Meeting",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transcription\": \"In today's meeting, we discussed the new user authentication system. John will implement OAuth2 by Friday. Sarah will create the user interface mockups by Wednesday. We decided to use PostgreSQL for the database. The deployment should be ready by next Monday.\",\n  \"options\": {\n    \"extractActionItems\": true,\n    \"generateSummary\": true,\n    \"identifyDecisions\": true\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/analyze",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "analyze"]
+            }
+          }
+        },
+        {
+          "name": "Generate Action Items",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transcription\": \"John needs to finish the authentication module by Friday. Sarah should review the API documentation. We need to schedule a follow-up meeting next week.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/action-items",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "action-items"]
+            }
+          }
+        },
+        {
+          "name": "Generate Summary",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transcription\": \"We had a productive meeting discussing the new project timeline. The team agreed on the deliverables and assigned responsibilities to each member.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/summary",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "summary"]
+            }
+          }
+        },
+        {
+          "name": "Extract Decisions",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"transcription\": \"After much discussion, we decided to use React for the frontend. We also agreed to deploy on AWS instead of Azure. The budget was approved for the additional security features.\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/decisions",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "decisions"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Ticket Generation",
+      "item": [
+        {
+          "name": "Generate Tickets",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"analysis\": {\n    \"actionItems\": [\n      \"Implement OAuth2 authentication\",\n      \"Create UI mockups\",\n      \"Set up PostgreSQL database\"\n    ],\n    \"decisions\": [\n      \"Use PostgreSQL for database\",\n      \"Deploy by next Monday\"\n    ],\n    \"summary\": \"Meeting about new authentication system\"\n  },\n  \"project\": \"authentication-project\",\n  \"template\": \"default\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/generate-tickets",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "generate-tickets"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Templates & Configuration",
+      "item": [
+        {
+          "name": "Get Prompt Templates",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "templates"]
+            }
+          }
+        },
+        {
+          "name": "Update Prompt Template",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"custom-summary\",\n  \"template\": \"Summarize the following meeting in 3 bullet points: {transcription}\",\n  \"description\": \"Custom summary template\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/templates",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "templates"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Batch Processing",
+      "item": [
+        {
+          "name": "Process Batch",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "audio",
+                  "type": "file",
+                  "src": "",
+                  "description": "Upload multiple audio files (max 10)"
+                },
+                {
+                  "key": "options",
+                  "value": "{\"batchName\": \"weekly-meetings\"}",
+                  "type": "text"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/batch/process",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "batch", "process"]
+            }
+          }
+        },
+        {
+          "name": "Get Batch Status",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/batch/:batchId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "batch", ":batchId"],
+              "variable": [
+                {
+                  "key": "batchId",
+                  "value": "batch_123"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {
+          "name": "Usage Analytics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/analytics/usage",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "analytics", "usage"]
+            }
+          }
+        },
+        {
+          "name": "Cost Analytics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/analytics/costs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "analytics", "costs"]
+            }
+          }
+        },
+        {
+          "name": "Performance Analytics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/analytics/performance",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "analytics", "performance"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Progress Tracking",
+      "item": [
+        {
+          "name": "Get Job Progress",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/ai/progress/:jobId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "ai", "progress", ":jobId"],
+              "variable": [
+                {
+                  "key": "jobId",
+                  "value": "job_123"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

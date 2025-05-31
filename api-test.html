@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Backlog Builder API Tester</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .endpoint {
+            border: 1px solid #ddd;
+            margin: 10px 0;
+            border-radius: 4px;
+        }
+        .endpoint-header {
+            background: #f8f9fa;
+            padding: 15px;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .endpoint-header:hover {
+            background: #e9ecef;
+        }
+        .method {
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        .method.get { background: #28a745; }
+        .method.post { background: #007bff; }
+        .method.put { background: #ffc107; color: black; }
+        .method.delete { background: #dc3545; }
+        .endpoint-content {
+            display: none;
+            padding: 15px;
+        }
+        .endpoint-content.active {
+            display: block;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px 0;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .response {
+            background: #f8f9fa;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px;
+            margin-top: 10px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .success { border-left: 4px solid #28a745; }
+        .error { border-left: 4px solid #dc3545; }
+        textarea {
+            width: 100%;
+            min-height: 100px;
+            font-family: monospace;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px;
+        }
+        input[type="file"] {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        .status {
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        .status.success { color: #28a745; }
+        .status.error { color: #dc3545; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Backlog Builder API Tester</h1>
+        <p>Interactive testing interface for the Backlog Builder API</p>
+        <div id="base-url">
+            <label>Base URL: </label>
+            <input type="text" id="baseUrl" value="http://localhost:3000" style="width: 300px;">
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Health Checks</h2>
+        
+        <div class="endpoint">
+            <div class="endpoint-header" onclick="toggleEndpoint('health-check')">
+                <div>
+                    <span class="method get">GET</span>
+                    <span>/health</span>
+                </div>
+                <span>Backend Health Check</span>
+            </div>
+            <div class="endpoint-content" id="health-check">
+                <button onclick="testEndpoint('GET', '/health')">Test Endpoint</button>
+                <div id="health-check-response"></div>
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <div class="endpoint-header" onclick="toggleEndpoint('ai-health')">
+                <div>
+                    <span class="method get">GET</span>
+                    <span>/api/ai/health</span>
+                </div>
+                <span>AI Service Health Check</span>
+            </div>
+            <div class="endpoint-content" id="ai-health">
+                <button onclick="testEndpoint('GET', '/api/ai/health')">Test Endpoint</button>
+                <div id="ai-health-response"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>AI Services</h2>
+        
+        <div class="endpoint">
+            <div class="endpoint-header" onclick="toggleEndpoint('ai-status')">
+                <div>
+                    <span class="method get">GET</span>
+                    <span>/api/ai/status</span>
+                </div>
+                <span>AI Service Status</span>
+            </div>
+            <div class="endpoint-content" id="ai-status">
+                <button onclick="testEndpoint('GET', '/api/ai/status')">Test Endpoint</button>
+                <div id="ai-status-response"></div>
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <div class="endpoint-header" onclick="toggleEndpoint('ai-providers')">
+                <div>
+                    <span class="method get">GET</span>
+                    <span>/api/ai/providers</span>
+                </div>
+                <span>Get AI Providers</span>
+            </div>
+            <div class="endpoint-content" id="ai-providers">
+                <button onclick="testEndpoint('GET', '/api/ai/providers')">Test Endpoint</button>
+                <div id="ai-providers-response"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>Meeting Analysis</h2>
+        
+        <div class="endpoint">
+            <div class="endpoint-header" onclick="toggleEndpoint('analyze-meeting')">
+                <div>
+                    <span class="method post">POST</span>
+                    <span>/api/ai/analyze</span>
+                </div>
+                <span>Analyze Meeting</span>
+            </div>
+            <div class="endpoint-content" id="analyze-meeting">
+                <label>Request Body:</label>
+                <textarea id="analyze-meeting-body">{
+  "transcription": "In today's meeting, we discussed the new user authentication system. John will implement OAuth2 by Friday. Sarah will create the user interface mockups by Wednesday. We decided to use PostgreSQL for the database. The deployment should be ready by next Monday.",
+  "options": {
+    "extractActionItems": true,
+    "generateSummary": true,
+    "identifyDecisions": true
+  }
+}</textarea>
+                <br>
+                <button onclick="testEndpointWithBody('POST', '/api/ai/analyze', 'analyze-meeting-body')">Test Endpoint</button>
+                <div id="analyze-meeting-response"></div>
+            </div>
+        </div>
+
+        <div class="endpoint">
+            <div class="endpoint-header" onclick="toggleEndpoint('action-items')">
+                <div>
+                    <span class="method post">POST</span>
+                    <span>/api/ai/action-items</span>
+                </div>
+                <span>Generate Action Items</span>
+            </div>
+            <div class="endpoint-content" id="action-items">
+                <label>Request Body:</label>
+                <textarea id="action-items-body">{
+  "transcription": "John needs to finish the authentication module by Friday. Sarah should review the API documentation. We need to schedule a follow-up meeting next week."
+}</textarea>
+                <br>
+                <button onclick="testEndpointWithBody('POST', '/api/ai/action-items', 'action-items-body')">Test Endpoint</button>
+                <div id="action-items-response"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2>File Upload</h2>
+        
+        <div class="endpoint">
+            <div class="endpoint-header" onclick="toggleEndpoint('transcribe-audio')">
+                <div>
+                    <span class="method post">POST</span>
+                    <span>/api/ai/transcribe</span>
+                </div>
+                <span>Transcribe Audio</span>
+            </div>
+            <div class="endpoint-content" id="transcribe-audio">
+                <label>Audio File:</label>
+                <input type="file" id="audio-file" accept="audio/*">
+                <br><br>
+                <button onclick="testFileUpload('/api/ai/transcribe', 'audio-file')">Upload and Transcribe</button>
+                <div id="transcribe-audio-response"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function toggleEndpoint(id) {
+            const content = document.getElementById(id);
+            content.classList.toggle('active');
+        }
+
+        function getBaseUrl() {
+            return document.getElementById('baseUrl').value;
+        }
+
+        async function testEndpoint(method, endpoint) {
+            const responseDiv = document.getElementById(endpoint.replace(/[\/]/g, '-').replace(/:/g, '-') + '-response');
+            responseDiv.innerHTML = '<div class="status">Making request...</div>';
+            
+            try {
+                const response = await fetch(getBaseUrl() + endpoint, {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.text();
+                let formattedData;
+                try {
+                    formattedData = JSON.stringify(JSON.parse(data), null, 2);
+                } catch {
+                    formattedData = data;
+                }
+                
+                const statusClass = response.ok ? 'success' : 'error';
+                responseDiv.innerHTML = `
+                    <div class="status ${statusClass}">Status: ${response.status} ${response.statusText}</div>
+                    <div class="response ${statusClass}">${formattedData}</div>
+                `;
+            } catch (error) {
+                responseDiv.innerHTML = `
+                    <div class="status error">Error: ${error.message}</div>
+                    <div class="response error">${error.toString()}</div>
+                `;
+            }
+        }
+
+        async function testEndpointWithBody(method, endpoint, bodyElementId) {
+            const responseDiv = document.getElementById(endpoint.replace(/[\/]/g, '-').replace(/:/g, '-') + '-response');
+            const body = document.getElementById(bodyElementId).value;
+            
+            responseDiv.innerHTML = '<div class="status">Making request...</div>';
+            
+            try {
+                const response = await fetch(getBaseUrl() + endpoint, {
+                    method: method,
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: body
+                });
+                
+                const data = await response.text();
+                let formattedData;
+                try {
+                    formattedData = JSON.stringify(JSON.parse(data), null, 2);
+                } catch {
+                    formattedData = data;
+                }
+                
+                const statusClass = response.ok ? 'success' : 'error';
+                responseDiv.innerHTML = `
+                    <div class="status ${statusClass}">Status: ${response.status} ${response.statusText}</div>
+                    <div class="response ${statusClass}">${formattedData}</div>
+                `;
+            } catch (error) {
+                responseDiv.innerHTML = `
+                    <div class="status error">Error: ${error.message}</div>
+                    <div class="response error">${error.toString()}</div>
+                `;
+            }
+        }
+
+        async function testFileUpload(endpoint, fileInputId) {
+            const responseDiv = document.getElementById(endpoint.replace(/[\/]/g, '-').replace(/:/g, '-') + '-response');
+            const fileInput = document.getElementById(fileInputId);
+            const file = fileInput.files[0];
+            
+            if (!file) {
+                responseDiv.innerHTML = '<div class="status error">Please select a file</div>';
+                return;
+            }
+            
+            responseDiv.innerHTML = '<div class="status">Uploading file...</div>';
+            
+            const formData = new FormData();
+            formData.append('audio', file);
+            
+            try {
+                const response = await fetch(getBaseUrl() + endpoint, {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.text();
+                let formattedData;
+                try {
+                    formattedData = JSON.stringify(JSON.parse(data), null, 2);
+                } catch {
+                    formattedData = data;
+                }
+                
+                const statusClass = response.ok ? 'success' : 'error';
+                responseDiv.innerHTML = `
+                    <div class="status ${statusClass}">Status: ${response.status} ${response.statusText}</div>
+                    <div class="response ${statusClass}">${formattedData}</div>
+                `;
+            } catch (error) {
+                responseDiv.innerHTML = `
+                    <div class="status error">Error: ${error.message}</div>
+                    <div class="response error">${error.toString()}</div>
+                `;
+            }
+        }
+
+        // Auto-test health check on load
+        document.addEventListener('DOMContentLoaded', function() {
+            testEndpoint('GET', '/health');
+        });
+    </script>
+</body>
+</html>

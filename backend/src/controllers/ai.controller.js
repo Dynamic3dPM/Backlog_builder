@@ -6,7 +6,7 @@
 const speechToTextService = require('../services/speechToText');
 const aiAnalysisService = require('../services/aiAnalysis');
 const ticketGeneratorService = require('../services/ticketGenerator');
-const { logger } = require('../utils/logger');
+const logger = require('../utils/logger');
 const { validateFileUpload } = require('../middleware/fileValidation');
 
 class AIController {
