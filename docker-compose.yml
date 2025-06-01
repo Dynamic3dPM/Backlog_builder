@@ -1,0 +1,79 @@
+services:
+  # Backend API Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - PREFER_LOCAL_AI=false
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://backlog_user:${POSTGRES_PASSWORD}@postgres:5432/backlog_builder
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - GITHUB_OWNER=${GITHUB_OWNER}
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+      - backend-logs:/app/logs
+    depends_on:
+      - redis
+      - postgres
+    networks:
+      - backlog-network
+    user: "node"
+
+  # Frontend Development Server
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./frontend:/usr/src/app
+      - /usr/src/app/node_modules
+    environment:
+      - NODE_ENV=development
+      - VUE_APP_API_URL=http://localhost:3001
+    stdin_open: true
+    tty: true
+    depends_on:
+      - backend
+    networks:
+      - backlog-network
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:14-alpine
+    environment:
+      - POSTGRES_USER=backlog_user
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=backlog_builder
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - backlog-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U backlog_user -d backlog_builder"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - backlog-network
+
+networks:
+  backlog-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  uploads:
+  backend-logs:

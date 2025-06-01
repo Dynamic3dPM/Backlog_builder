@@ -1,6 +1,8 @@
 import axios from 'axios';
 
-const API_BASE_URL = process.env.VUE_APP_API_URL || 'http://localhost:3000/api';
+// Adjust the URL format to match what we're providing in the environment variable
+const API_URL = process.env.VUE_APP_API_URL || 'http://localhost:3001';
+const API_BASE_URL = `${API_URL}/api`;
 
 const githubService = {
     /**
@@ -19,15 +21,15 @@ const githubService = {
 
     /**
      * Get all repositories for a specific project
-     * @param {string} projectId - The ID of the project
+     * @param {string} projectId - The project ID
      * @returns {Promise<Array>} List of repositories
      */
     async getProjectRepositories(projectId) {
         try {
-            const response = await axios.get(`${API_BASE_URL}/github/projects/${projectId}/repositories`);
+            const response = await axios.get(`${API_BASE_URL}/github/repositories?projectId=${projectId}`);
             return response.data.repositories || [];
         } catch (error) {
-            console.error('Error fetching project repositories:', error);
+            console.error('Error fetching repositories:', error);
             throw error;
         }
     },
@@ -39,15 +41,13 @@ const githubService = {
      * @param {string} projectId - The project ID (optional)
      * @returns {Promise<Object>} The created issue
      */
-    async createIssue(issue, repository, projectId = null) {
+    async createIssue(ticket, repository, projectId = null) {
         try {
-            const payload = {
-                ticket: issue,
+            const response = await axios.post(`${API_BASE_URL}/github/create-issue`, {
+                ticket,  // Changed from 'issue' to 'ticket' to match backend expectation
                 repository,
                 projectId
-            };
-
-            const response = await axios.post(`${API_BASE_URL}/github/create-issue`, payload);
+            });
             return response.data;
         } catch (error) {
             console.error('Error creating issue:', error);

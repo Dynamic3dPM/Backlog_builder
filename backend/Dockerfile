@@ -4,33 +4,29 @@ FROM node:18-alpine
 # Set working directory
 WORKDIR /app
 
-# Create non-root user for security
-RUN addgroup -g 1001 -S nodejs && \
-    adduser -S backend -u 1001
+# Create necessary directories with correct permissions
+RUN mkdir -p /app/logs && \
+    chown -R node:node /app
 
 # Copy package files
-COPY package*.json ./
+COPY --chown=node:node package*.json ./
+
 
 # Install dependencies
 RUN npm ci --only=production && npm cache clean --force
 
 # Copy application code
-COPY src/ ./src/
-COPY *.js ./
+COPY --chown=node:node src/ ./src/
+COPY --chown=node:node *.js ./
 
-# Create necessary directories
-RUN mkdir -p logs storage/uploads storage/transcripts storage/processed && \
-    chown -R backend:nodejs /app
+# Set environment variables
+ENV NODE_ENV=production
 
 # Switch to non-root user
-USER backend
+USER node
 
-# Expose port
+# Expose the app port
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/health || exit 1
-
 # Start the application
-CMD ["npm", "start"]
+CMD ["node", "src/app.js"]
