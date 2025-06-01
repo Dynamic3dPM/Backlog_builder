@@ -53,6 +53,7 @@ const validateProcessingOptions = (req, res, next) => {
     const {
         language,
         priority,
+        model,
         includeActionItems,
         includeDecisions,
         includeSummary,
@@ -64,6 +65,14 @@ const validateProcessingOptions = (req, res, next) => {
         return res.status(400).json({
             success: false,
             error: 'Invalid language code'
+        });
+    }
+
+    // Validate model (if provided)
+    if (model && !['tiny', 'base'].includes(model)) {
+        return res.status(400).json({
+            success: false,
+            error: 'Invalid model. Must be one of: tiny, base'
         });
     }
 

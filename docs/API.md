@@ -146,6 +146,9 @@ Get AI service performance metrics.
 #### GET /api/ai/ws/transcribe/:jobId
 Real-time transcription updates via WebSocket.
 
+#### GET list of all projects in GitHub
+
+
 #### GET /api/ai/ws/progress/:jobId
 Real-time progress updates via WebSocket.
 

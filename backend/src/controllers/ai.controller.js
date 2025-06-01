@@ -8,6 +8,7 @@ const aiAnalysisService = require('../services/aiAnalysis');
 const ticketGeneratorService = require('../services/ticketGenerator');
 const logger = require('../utils/logger');
 const { validateFileUpload } = require('../middleware/fileValidation');
+const fs = require('fs'); // Add fs import for cleanup and path handling
 
 class AIController {
     /**
@@ -21,122 +22,330 @@ class AIController {
      * Process uploaded audio file through complete AI pipeline
      */
     async processAudioFile(req, res) {
+        const startTime = Date.now();
+        const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const { file } = req;
+        
         try {
-            const { file } = req;
             const { 
-                language = 'en-US',
+                language = 'auto',
                 meetingType = 'general',
                 projectId,
                 generateTickets = true,
-                priority = 'balanced'
+                priority = 'balanced',
+                enableDiarization = true,
+                model = 'small'
             } = req.body;
 
             if (!file) {
                 return res.status(400).json({
                     error: 'No audio file provided',
-                    code: 'MISSING_FILE'
+                    code: 'MISSING_FILE',
+                    jobId
                 });
             }
 
-            // Validate file format and size
-            const validation = validateFileUpload(file);
-            if (!validation.isValid) {
-                return res.status(400).json({
-                    error: validation.error,
-                    code: 'INVALID_FILE'
+            logger.info(`Starting AI pipeline for file: ${file.originalname}`, { jobId });
+
+            // Setup WebSocket connection if available
+            const wsClient = req.app.get('wsClient');
+            const sendProgress = (progress, message = '') => {
+                const progressData = {
+                    jobId,
+                    type: 'progress',
+                    progress: Math.min(100, Math.max(0, progress)),
+                    message,
+                    timestamp: new Date().toISOString()
+                };
+                
+                if (wsClient) {
+                    wsClient.emit('progress', progressData);
+                }
+                
+                return progressData;
+            };
+
+            sendProgress(5, 'Starting audio processing...');
+
+            // Step 1: Speech-to-Text with progress tracking
+            let transcriptionResult;
+            try {
+                console.log('=== STARTING SPEECH-TO-TEXT PROCESSING ===');
+                console.log('Audio file path:', file.path);
+                console.log('Language:', language);
+                console.log('Model:', model);
+                
+                transcriptionResult = await speechToTextService.processAudio(
+                    file.path,
+                    {
+                        language,
+                        model,
+                        speakerDiarization: enableDiarization,
+                        enableProgress: true,
+                        priority,
+                        onProgress: (progressData) => {
+                            // Map progress from 0-80% for STT (leaving 20% for AI analysis)
+                            const mappedProgress = 5 + (progressData.progress * 0.75);
+                            sendProgress(mappedProgress, `Transcribing: ${progressData.message || ''}`);
+                        }
+                    }
+                );
+                
+                console.log('=== SPEECH-TO-TEXT RESULT ===');
+                console.log('Result type:', typeof transcriptionResult);
+                console.log('Result keys:', Object.keys(transcriptionResult));
+                console.log('Result content:', JSON.stringify(transcriptionResult, null, 2));
+                
+                if (!transcriptionResult || !transcriptionResult.success) {
+                    throw new Error(transcriptionResult?.error || 'Unknown error during transcription');
+                }
+                
+                sendProgress(80, 'Transcription complete. Analyzing content...');
+                
+            } catch (error) {
+                logger.error('Speech-to-text processing failed', { 
+                    error: error.message, 
+                    stack: error.stack,
+                    jobId,
+                    file: file.originalname 
                 });
-            }
-
-            logger.info(`Starting AI pipeline for file: ${file.originalname}`);
-
-            // Step 1: Speech-to-Text
-            const transcriptionResult = await speechToTextService.transcribeAudio(file.path, {
-                language,
-                useLocal: true, // Prefer local Whisper
-                enableDiarization: true
-            });
-
-            if (!transcriptionResult.success) {
+                
+                sendProgress(0, 'Transcription failed');
+                
                 return res.status(500).json({
+                    success: false,
                     error: 'Speech-to-text processing failed',
-                    details: transcriptionResult.error,
-                    code: 'STT_FAILED'
+                    message: error.message,
+                    code: 'STT_FAILED',
+                    jobId
                 });
             }
 
             // Step 2: AI Analysis
-            const analysisResult = await aiAnalysisService.analyzeMeeting({
-                transcript: transcriptionResult.transcript,
-                meetingType,
-                language,
-                extractActionItems: true,
-                extractDecisions: true,
-                generateSummary: true,
-                detectSentiment: true
-            });
+            let analysisResult;
+            try {
+                // Debug transcription content and type
+                logger.debug('=== RAW TRANSCRIPTION RESULT ===', {
+                    resultKeys: Object.keys(transcriptionResult),
+                    textType: typeof transcriptionResult.text,
+                    textValue: typeof transcriptionResult.text === 'string' ? 
+                        transcriptionResult.text.substring(0, 100) + (transcriptionResult.text.length > 100 ? '...' : '') : 
+                        transcriptionResult.text,
+                    hasSegments: Array.isArray(transcriptionResult.segments),
+                    segmentCount: Array.isArray(transcriptionResult.segments) ? transcriptionResult.segments.length : 0,
+                    firstSegment: Array.isArray(transcriptionResult.segments) && transcriptionResult.segments[0] ? 
+                        JSON.stringify(transcriptionResult.segments[0]) : 'No segments',
+                    resultString: JSON.stringify(transcriptionResult).substring(0, 200) + '...',
+                    // Additional debug info
+                    hasTranscript: 'transcript' in transcriptionResult,
+                    transcriptionType: typeof transcriptionResult.transcription,
+                    hasTranscription: 'transcription' in transcriptionResult,
+                    transcriptionValue: typeof transcriptionResult.transcription === 'string' ?
+                        transcriptionResult.transcription.substring(0, 100) + '...' : 'N/A'
+                });
 
-            if (!analysisResult.success) {
+                // Coerce transcription to string with fallbacks
+                let transcriptText = '';
+                try {
+                    // Try to get text from the most common fields
+                    if (transcriptionResult?.text) {
+                        // If text exists, use it regardless of type
+                        transcriptText = String(transcriptionResult.text);
+                    } else if (transcriptionResult?.transcription) {
+                        // Try the transcription field if text isn't available
+                        transcriptText = String(transcriptionResult.transcription);
+                    } else if (transcriptionResult?.transcript) {
+                        // Another common field name for transcript
+                        transcriptText = String(transcriptionResult.transcript);
+                    } else if (Array.isArray(transcriptionResult?.segments)) {
+                        // Fallback to joining segments if text isn't available
+                        transcriptText = transcriptionResult.segments
+                            .filter(seg => seg?.text)
+                            .map(seg => String(seg.text))
+                            .join(' ');
+                    }
+                } catch (error) {
+                    logger.error('Error processing transcription result:', {
+                        error: error.message,
+                        transcriptionResult: JSON.stringify(transcriptionResult).substring(0, 200) + '...',
+                        jobId
+                    });
+                    throw new Error(`Failed to process transcription: ${error.message}`);
+                }
+
+                // Ensure we have valid text
+                if (!transcriptText || typeof transcriptText !== 'string') {
+                    const errorMsg = 'Failed to extract valid text from transcription result';
+                    logger.error(errorMsg, { transcriptionResult: JSON.stringify(transcriptionResult) });
+                    throw new Error(errorMsg);
+                }
+
+                logger.debug('Transcript text before analysis:', {
+                    type: typeof transcriptText,
+                    length: transcriptText.length,
+                    first100: transcriptText.substring(0, 100) + (transcriptText.length > 100 ? '...' : '')
+                });
+
+                // Ensure text is properly formatted for analysis
+                transcriptText = transcriptText.trim();
+                if (transcriptText.length < 50) {
+                    throw new Error(`Transcription is too short (${transcriptText.length} chars). Minimum 50 characters required.`);
+                }
+
+                analysisResult = await aiAnalysisService.analyzeMeeting(
+                    transcriptText,
+                    {
+                        meetingType,
+                        language: transcriptionResult.language || language,
+                        extractActionItems: true,
+                        extractDecisions: true,
+                        generateSummary: true,
+                        detectSentiment: true
+                    }
+                );
+                
+                if (!analysisResult.success) {
+                    throw new Error(analysisResult.error || 'Unknown error during analysis');
+                }
+                
+                sendProgress(95, 'Analysis complete. Finalizing results...');
+                
+            } catch (error) {
+                logger.error('AI analysis failed', { 
+                    error: error.message, 
+                    stack: error.stack,
+                    jobId,
+                    file: file.originalname 
+                });
+                
+                sendProgress(0, 'Analysis failed');
+                
                 return res.status(500).json({
+                    success: false,
                     error: 'AI analysis failed',
-                    details: analysisResult.error,
-                    code: 'ANALYSIS_FAILED'
+                    message: error.message,
+                    code: 'ANALYSIS_FAILED',
+                    jobId
                 });
             }
 
             // Step 3: Generate Tickets (if requested)
             let ticketResults = null;
             if (generateTickets && analysisResult.data.action_items?.length > 0) {
-                ticketResults = await ticketGeneratorService.generateTicketsFromActionItems(
-                    analysisResult.data.action_items,
-                    {
-                        projectId,
-                        context: analysisResult.data.summary?.executive_summary,
-                        priority
+                try {
+                    ticketResults = await ticketGeneratorService.generateTicketsFromActionItems(
+                        analysisResult.data.action_items,
+                        {
+                            projectId,
+                            context: analysisResult.data.summary?.executive_summary,
+                            priority
+                        }
+                    );
+                    
+                    if (ticketResults && !ticketResults.success) {
+                        logger.warn('Ticket generation completed with warnings', {
+                            jobId,
+                            warnings: ticketResults.warnings
+                        });
                     }
-                );
+                    
+                } catch (error) {
+                    logger.error('Ticket generation failed', {
+                        error: error.message,
+                        stack: error.stack,
+                        jobId
+                    });
+                    // Continue with the response even if ticket generation fails
+                }
             }
 
             // Compile final response
+            const processingTime = Date.now() - startTime;
             const response = {
                 success: true,
-                processing_time: Date.now() - req.startTime,
+                jobId,
+                processing_time: processingTime,
                 data: {
                     transcription: {
-                        text: transcriptionResult.transcript,
+                        text: transcriptionResult.text,
                         language: transcriptionResult.language,
-                        confidence: transcriptionResult.confidence,
-                        segments: transcriptionResult.segments,
-                        speakers: transcriptionResult.speakers
+                        segments: transcriptionResult.segments || [],
+                        speakers: transcriptionResult.speakers || [],
+                        processing_time: transcriptionResult.processing_time
                     },
                     analysis: analysisResult.data,
-                    tickets: ticketResults?.success ? ticketResults.tickets : null
+                    tickets: ticketResults?.tickets || null
                 },
                 metadata: {
                     file_name: file.originalname,
                     file_size: file.size,
                     meeting_type: meetingType,
-                    project_id: projectId
-                }
+                    project_id: projectId,
+                    model_used: transcriptionResult.metadata?.model,
+                    language_detected: transcriptionResult.language
+                },
+                warnings: ticketResults?.warnings || []
             };
 
-            // Cleanup uploaded file
-            await speechToTextService.cleanupFile(file.path);
+            // Send completion event
+            sendProgress(100, 'Processing complete');
+            
+            if (wsClient) {
+                wsClient.emit('complete', {
+                    jobId,
+                    type: 'complete',
+                    timestamp: new Date().toISOString(),
+                    result: response
+                });
+            }
 
-            logger.info(`AI pipeline completed successfully for ${file.originalname}`);
+            logger.info(`AI pipeline completed successfully for ${file.originalname}`, {
+                jobId,
+                processingTime: `${processingTime}ms`,
+                fileSize: file.size,
+                language: response.data.transcription.language
+            });
+            
             res.json(response);
 
         } catch (error) {
-            logger.error('AI pipeline error:', error);
+            logger.error('AI pipeline failed', {
+                error: error.message,
+                stack: error.stack,
+                jobId,
+                file: file?.originalname
+            });
+            
+            // Send error event
+            const errorData = {
+                jobId,
+                type: 'error',
+                error: 'AI pipeline failed',
+                message: error.message,
+                code: 'PIPELINE_ERROR',
+                timestamp: new Date().toISOString()
+            };
+            
+            if (req.app.get('wsClient')) {
+                req.app.get('wsClient').emit('error', errorData);
+            }
             
             // Cleanup on error
-            if (req.file?.path) {
-                await speechToTextService.cleanupFile(req.file.path);
+            try {
+                if (file?.path && fs.existsSync(file.path)) {
+                    await fs.promises.unlink(file.path);
+                }
+            } catch (cleanupError) {
+                logger.warn('Failed to clean up file', {
+                    file: file?.path,
+                    error: cleanupError.message,
+                    jobId
+                });
             }
 
             res.status(500).json({
-                error: 'AI pipeline failed',
-                message: error.message,
-                code: 'PIPELINE_ERROR'
+                success: false,
+                ...errorData
             });
         }
     }
@@ -145,23 +354,49 @@ class AIController {
      * Process text transcript directly (bypass STT)
      */
     async processTranscript(req, res) {
+        const startTime = Date.now();
+        const jobId = `job_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
         try {
             const {
                 transcript,
                 meetingType = 'general',
                 language = 'en',
                 projectId,
-                generateTickets = true
+                generateTickets = true,
+                priority = 'medium'
             } = req.body;
 
             if (!transcript || transcript.trim().length === 0) {
                 return res.status(400).json({
+                    success: false,
                     error: 'Transcript text is required',
-                    code: 'MISSING_TRANSCRIPT'
+                    code: 'MISSING_TRANSCRIPT',
+                    jobId
                 });
             }
 
-            logger.info('Starting AI analysis for provided transcript');
+            logger.info('Starting AI analysis for provided transcript', { jobId });
+
+            // Setup WebSocket connection if available
+            const wsClient = req.app.get('wsClient');
+            const sendProgress = (progress, message = '') => {
+                const progressData = {
+                    jobId,
+                    type: 'progress',
+                    progress: Math.min(100, Math.max(0, progress)),
+                    message,
+                    timestamp: new Date().toISOString()
+                };
+                
+                if (wsClient) {
+                    wsClient.emit('progress', progressData);
+                }
+                
+                return progressData;
+            };
+            
+            sendProgress(10, 'Starting analysis...');
 
             // AI Analysis
             const analysisResult = await aiAnalysisService.analyzeMeeting({
@@ -175,41 +410,71 @@ class AIController {
             });
 
             if (!analysisResult.success) {
-                return res.status(500).json({
-                    error: 'AI analysis failed',
-                    details: analysisResult.error,
-                    code: 'ANALYSIS_FAILED'
-                });
+                throw new Error(analysisResult.error || 'AI analysis failed');
             }
+            
+            sendProgress(70, 'Analysis complete. Generating tickets...');
 
             // Generate Tickets (if requested)
             let ticketResults = null;
             if (generateTickets && analysisResult.data.action_items?.length > 0) {
-                ticketResults = await ticketGeneratorService.generateTicketsFromActionItems(
-                    analysisResult.data.action_items,
-                    {
-                        projectId,
-                        context: analysisResult.data.summary?.executive_summary
-                    }
-                );
+                try {
+                    ticketResults = await ticketGeneratorService.generateTicketsFromActionItems(
+                        analysisResult.data.action_items,
+                        {
+                            projectId,
+                            context: analysisResult.data.summary?.executive_summary,
+                            priority
+                        }
+                    );
+                } catch (error) {
+                    logger.error('Ticket generation failed', {
+                        error: error.message,
+                        stack: error.stack,
+                        jobId
+                    });
+                    // Continue with the response even if ticket generation fails
+                }
             }
+            
+            sendProgress(95, 'Finalizing results...');
 
+            const processingTime = Date.now() - startTime;
             const response = {
                 success: true,
-                processing_time: Date.now() - req.startTime,
+                jobId,
+                processing_time: processingTime,
                 data: {
                     analysis: analysisResult.data,
-                    tickets: ticketResults?.success ? ticketResults.tickets : null
+                    tickets: ticketResults?.tickets || null
                 },
                 metadata: {
-                    transcript_length: transcript.length,
                     meeting_type: meetingType,
-                    project_id: projectId
-                }
+                    project_id: projectId,
+                    language
+                },
+                warnings: ticketResults?.warnings || []
             };
 
-            res.json(response);
+            // Send completion event
+            sendProgress(100, 'Processing complete');
+            if (wsClient) {
+                wsClient.emit('complete', {
+                    jobId,
+                    type: 'complete',
+                    timestamp: new Date().toISOString(),
+                    result: response
+                });
+            }
 
+            logger.info(`Transcript processing completed successfully`, {
+                jobId,
+                processingTime: `${processingTime}ms`,
+                meetingType,
+                language
+            });
+
+            return res.json(response);
         } catch (error) {
             logger.error('Transcript analysis error:', error);
             res.status(500).json({

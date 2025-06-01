@@ -19,6 +19,16 @@ class AIAnalysisService {
      * @returns {Object} Analysis results with action items, decisions, and summary
      */
     async analyzeMeeting(transcription, options = {}) {
+        console.log('=== Starting analyzeMeeting ===');
+        console.log('Input transcription type:', typeof transcription);
+        console.log('Input transcription value:', transcription);
+        
+        // Debug the actual object structure
+        if (transcription && typeof transcription === 'object') {
+            console.log('Transcription object keys:', Object.keys(transcription));
+            console.log('Transcription object content:', JSON.stringify(transcription, null, 2));
+        }
+        
         const {
             meetingType = 'general',
             complexity = 'medium',
@@ -31,14 +41,52 @@ class AIAnalysisService {
         } = options;
 
         try {
-            // Validate transcription
-            if (!transcription || transcription.trim().length < 50) {
-                throw new Error('Transcription is too short for meaningful analysis');
+            console.log('Validating transcription...');
+            
+            // Handle null/undefined
+            if (transcription === null || transcription === undefined) {
+                throw new Error('Transcription is null or undefined');
+            }
+            
+            // Convert to string safely
+            let transcriptStr;
+            if (typeof transcription === 'string') {
+                transcriptStr = transcription;
+            } else if (transcription && typeof transcription.text === 'string') {
+                // Handle case where transcription is an object with a text property
+                transcriptStr = transcription.text;
+            } else if (typeof transcription.toString === 'function') {
+                // Try to convert to string if possible
+                transcriptStr = transcription.toString();
+            } else {
+                // Last resort - JSON stringify
+                transcriptStr = JSON.stringify(transcription);
+            }
+            
+            console.log('Transcription after conversion:', {
+                type: typeof transcriptStr,
+                length: transcriptStr?.length,
+                first50: transcriptStr?.substring?.(0, 50) || 'N/A',
+                isString: typeof transcriptStr === 'string'
+            });
+            
+            // Ensure we have a valid string
+            if (!transcriptStr || typeof transcriptStr !== 'string') {
+                throw new Error(`Invalid transcription type: ${typeof transcriptStr}`);
+            }
+            
+            const trimmed = transcriptStr.trim();
+            if (!trimmed) {
+                throw new Error('Transcription is empty after trimming');
+            }
+            
+            if (trimmed.length < 50) {
+                throw new Error(`Transcription is too short (${trimmed.length} chars) for meaningful analysis. Minimum 50 characters required.`);
             }
 
-            // Prepare analysis request
+            // Prepare analysis request with the processed transcript string
             const analysisRequest = {
-                transcription,
+                transcription: trimmed, // Use the processed and trimmed string
                 options: {
                     meetingType,
                     complexity,
@@ -303,12 +351,22 @@ class AIAnalysisService {
      * Validate analysis request
      */
     validateAnalysisRequest(transcription, options) {
-        if (!transcription || typeof transcription !== 'string') {
-            throw new Error('Valid transcription text is required');
+        console.log('Validating transcription:', {
+            type: typeof transcription,
+            isString: typeof transcription === 'string',
+            length: transcription?.length,
+            value: typeof transcription === 'string' ? transcription.substring(0, 100) + (transcription.length > 100 ? '...' : '') : transcription
+        });
+
+        if (!transcription) {
+            throw new Error('Transcription text is required');
         }
 
-        if (transcription.trim().length < 50) {
-            throw new Error('Transcription is too short for meaningful analysis');
+        // Ensure transcription is a string
+        const transcriptText = String(transcription || '');
+
+        if (transcriptText.trim().length < 50) {
+            throw new Error(`Transcription is too short (${transcriptText.trim().length} chars) for meaningful analysis. Minimum 50 characters required.`);
         }
 
         const wordCount = transcription.split(/\s+/).length;
@@ -325,24 +383,33 @@ class AIAnalysisService {
      * Format local service response
      */
     formatLocalResponse(data) {
+        // Handle both snake_case and camelCase response formats
+        const actionItems = data.action_items || data.actionItems || [];
+        const keyPoints = data.key_points || data.keyPoints || [];
+        const modelUsed = data.model_used || data.modelUsed || 'unknown';
+        const processingTime = data.processing_time || data.processingTime || 0;
+        const wordCount = data.word_count || (data.metadata?.wordCount || 0);
+        const participantCount = data.participant_count || (data.metadata?.participantCount || 0);
+        const topicCount = data.topic_count || (data.metadata?.topicCount || 0);
+        
         return {
             success: true,
-            summary: data.summary,
-            actionItems: data.action_items || [],
+            summary: data.summary || {},
+            actionItems: actionItems,
             decisions: data.decisions || [],
-            keyPoints: data.key_points || [],
+            keyPoints: keyPoints,
             participants: data.participants || [],
             topics: data.topics || [],
-            sentiment: data.sentiment,
-            confidence: data.confidence,
-            model: data.model_used,
-            processingTime: data.processing_time,
+            sentiment: data.sentiment || null,
+            confidence: data.confidence || 0,
+            model: modelUsed,
+            processingTime: processingTime,
             metadata: {
-                wordCount: data.word_count,
-                participantCount: data.participant_count,
-                topicCount: data.topic_count,
-                actionItemCount: data.action_items?.length || 0,
-                decisionCount: data.decisions?.length || 0
+                wordCount: wordCount,
+                participantCount: participantCount,
+                topicCount: topicCount,
+                actionItemCount: actionItems.length,
+                decisionCount: (data.decisions || []).length
             }
         };
     }
