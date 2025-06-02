@@ -571,7 +571,8 @@ class GitHubService {
                     full_name: repo.full_name,
                     description: repo.description,
                     url: repo.url,
-                    private: repo.isPrivate
+                    private: repo.isPrivate,
+                    has_issues: repo.hasIssuesEnabled,
                 }))
             };
         } catch (error) {
@@ -609,6 +610,7 @@ class GitHubService {
                     url: repo.html_url,
                     description: repo.description,
                     private: repo.private,
+                    has_issues: repo.has_issues,
                     default_branch: repo.default_branch,
                     language: repo.language,
                     stars: repo.stargazers_count,

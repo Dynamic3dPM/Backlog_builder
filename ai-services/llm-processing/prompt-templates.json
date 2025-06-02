@@ -53,8 +53,8 @@
     "ticket_generation": {
       "user_story": {
         "agile": {
-          "prompt": "Convert this action item into a well-formatted user story:\n\nAction Item: {{action_item}}\nContext: {{context}}\n\nCreate a user story following this format:\n**Title:** [Concise title]\n**As a** [user type]\n**I want** [goal]\n**So that** [benefit]\n\n**Acceptance Criteria:**\n- [ ] Criterion 1\n- [ ] Criterion 2\n- [ ] Criterion 3\n\n**Additional Details:**\n[Any relevant technical details or constraints]\n\nUser Story:",
-          "max_tokens": 400,
+          "prompt": "Create a user story ticket for this task:\n\nTask: {{interpreted_problem}}\nGoal: {{interpreted_outcome}}\nUser: {{user_role}}\n\nTitle: Implement User Authentication\nDescription: As a {{user_role}}, I want to {{interpreted_problem}} so that {{interpreted_outcome}}.\nPriority: Medium\nAcceptance Criteria:\n- User registration works\n- Login functionality complete\n- Profile management available\n\nNow create a ticket for the given task:\n\nTitle:",
+          "max_tokens": 200,
           "temperature": 0.3
         }
       },
@@ -88,6 +88,14 @@
         "prompt": "Categorize this meeting content by project/team area:\n\nAvailable categories:\n{{categories}}\n\nMeeting content:\n{{transcript}}\n\nReturn the most relevant category and confidence score (0-1):\nFormat: {\"category\": \"category_name\", \"confidence\": 0.95, \"reasoning\": \"brief explanation\"}",
         "max_tokens": 150,
         "temperature": 0.2,
+        "output_format": "json"
+      }
+    },
+    "task_interpretation": {
+      "default": {
+        "prompt": "Analyze the highly conversational 'Raw Action Item' provided below, along with its 'Context'.\nYour primary objective is to DISTILL this conversational input into a structured, actionable task.\nDO NOT simply copy phrases from the input. You MUST rephrase and summarize.\n\nOutput ONLY a valid JSON object with these exact keys: \"problem\", \"desired_outcome\", \"user_role\".\n\n- \"problem\": Transform the raw input into a concise statement (max 1-2 short sentences) identifying the fundamental issue or the specific, actionable task that needs to be done. If the input is too vague or non-actionable (e.g., 'let's start from the beginning'), state 'Non-actionable conversational item'.\n- \"desired_outcome\": Clearly state the specific, tangible result or goal that should be achieved by addressing the 'problem'. This should be a concise statement (max 1-2 short sentences). If the problem is non-actionable, this can be 'No specific outcome identified'.\n- \"user_role\": Identify the primary user, role, or stakeholder who is most directly involved or benefits from this task (e.g., 'Developer', 'Product Manager', 'End User', 'System Administrator'). If unclear, use 'General User'.\n\nCRITICAL: The output MUST be ONLY the JSON object. No introductory text, no explanations, no markdown.\n\nRaw Action Item: \"{{action_item}}\"\nContext: \"{{context}}\"\n\nInterpreted JSON:",
+        "max_tokens": 200,
+        "temperature": 0.1,
         "output_format": "json"
       }
     },

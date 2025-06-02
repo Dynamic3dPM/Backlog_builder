@@ -231,13 +231,13 @@ class AIController {
 
             // Step 3: Generate Tickets (if requested)
             let ticketResults = null;
-            if (generateTickets && analysisResult.data.action_items?.length > 0) {
+            if (generateTickets && analysisResult.actionItems?.length > 0) {
                 try {
                     ticketResults = await ticketGeneratorService.generateTicketsFromActionItems(
-                        analysisResult.data.action_items,
+                        analysisResult.actionItems,
                         {
                             projectId,
-                            context: analysisResult.data.summary?.executive_summary,
+                            context: analysisResult.summary?.executive_summary,
                             priority
                         }
                     );
@@ -273,7 +273,7 @@ class AIController {
                         speakers: transcriptionResult.speakers || [],
                         processing_time: transcriptionResult.processing_time
                     },
-                    analysis: analysisResult.data,
+                    analysis: analysisResult,
                     tickets: ticketResults?.tickets || null
                 },
                 metadata: {
@@ -417,13 +417,13 @@ class AIController {
 
             // Generate Tickets (if requested)
             let ticketResults = null;
-            if (generateTickets && analysisResult.data.action_items?.length > 0) {
+            if (generateTickets && analysisResult.actionItems?.length > 0) {
                 try {
                     ticketResults = await ticketGeneratorService.generateTicketsFromActionItems(
-                        analysisResult.data.action_items,
+                        analysisResult.actionItems,
                         {
                             projectId,
-                            context: analysisResult.data.summary?.executive_summary,
+                            context: analysisResult.summary?.executive_summary,
                             priority
                         }
                     );
@@ -445,8 +445,14 @@ class AIController {
                 jobId,
                 processing_time: processingTime,
                 data: {
-                    analysis: analysisResult.data,
-                    tickets: ticketResults?.tickets || null
+                    actionItems: analysisResult.actionItems || [],
+                    decisions: analysisResult.decisions || [],
+                    summary: analysisResult.summary || {},
+                    keyPoints: analysisResult.keyPoints || [],
+                    participants: analysisResult.participants || [],
+                    topics: analysisResult.topics || [],
+                    sentiment: analysisResult.sentiment || null,
+                    confidence: analysisResult.confidence || 0
                 },
                 metadata: {
                     meeting_type: meetingType,
@@ -541,8 +547,14 @@ class AIController {
             
             // Handle nested analysis format (e.g., from /api/ai/analyze response)
             if (analysis && !actionItems) {
-                items = analysis.actionItems;
-                analysisData = analysis;
+                // Handle both direct analysis format and nested data format
+                if (analysis.data) {
+                    items = analysis.data.actionItems;
+                    analysisData = analysis.data;
+                } else {
+                    items = analysis.actionItems;
+                    analysisData = analysis;
+                }
             }
 
             // If using full analysis object, use the comprehensive ticket generator
@@ -1234,7 +1246,16 @@ class AIController {
 
             res.json({
                 success: true,
-                data: analysisResult.data,
+                data: {
+                    actionItems: analysisResult.actionItems || [],
+                    decisions: analysisResult.decisions || [],
+                    summary: analysisResult.summary || {},
+                    keyPoints: analysisResult.keyPoints || [],
+                    participants: analysisResult.participants || [],
+                    topics: analysisResult.topics || [],
+                    sentiment: analysisResult.sentiment || null,
+                    confidence: analysisResult.confidence || 0
+                },
                 metadata: {
                     transcription_length: transcription.length,
                     meeting_type: meetingType,
@@ -1449,6 +1470,69 @@ class AIController {
             res.status(500).json({
                 error: 'Failed to extract decisions',
                 message: error.message
+            });
+        }
+    }
+
+    /**
+     * Smart conversation analysis with intelligent ticket generation
+     */
+    async analyzeConversationSmart(req, res) {
+        const startTime = Date.now();
+        
+        try {
+            const { transcript } = req.body;
+            
+            if (!transcript) {
+                return res.status(400).json({
+                    success: false,
+                    error: 'Transcript is required for conversation analysis'
+                });
+            }
+            
+            logger.info('Starting smart conversation analysis');
+            
+            // Call the smart conversation analysis endpoint on the HuggingFace service
+            const analysisResult = await aiAnalysisService.analyzeConversationSmart(transcript);
+            
+            if (!analysisResult.success) {
+                throw new Error(analysisResult.error || 'Smart conversation analysis failed');
+            }
+            
+            const processingTime = Date.now() - startTime;
+            
+            logger.info(`Smart conversation analysis completed in ${processingTime}ms`, {
+                insights_found: analysisResult.conversation_analysis?.insights_found,
+                tickets_generated: analysisResult.intelligent_tickets?.length,
+                project_context: analysisResult.conversation_analysis?.project_context
+            });
+            
+            res.json({
+                success: true,
+                conversation_analysis: analysisResult.conversation_analysis,
+                intelligent_tickets: analysisResult.intelligent_tickets,
+                insights_analyzed: analysisResult.insights_analyzed,
+                actionable_insights: analysisResult.actionable_insights,
+                processing_metadata: {
+                    ...analysisResult.processing_metadata,
+                    processing_time_ms: processingTime,
+                    timestamp: new Date().toISOString()
+                }
+            });
+            
+        } catch (error) {
+            const processingTime = Date.now() - startTime;
+            logger.error('Smart conversation analysis failed:', error);
+            
+            res.status(500).json({
+                success: false,
+                error: 'Smart conversation analysis failed',
+                message: error.message,
+                processing_metadata: {
+                    processing_time_ms: processingTime,
+                    timestamp: new Date().toISOString(),
+                    error_type: 'smart_analysis_error'
+                }
             });
         }
     }

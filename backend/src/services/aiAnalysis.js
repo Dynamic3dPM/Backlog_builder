@@ -3,7 +3,7 @@ const fs = require('fs').promises;
 
 class AIAnalysisService {
     constructor() {
-        this.localLLMUrl = process.env.LOCAL_LLM_URL || 'http://localhost:8003';
+        this.localLLMUrl = process.env.LOCAL_LLM_URL || 'http://huggingface-llm:8002';
         // CLOUD SERVICE TEMPORARILY DISABLED
         // this.cloudLLMUrl = process.env.CLOUD_LLM_URL || 'http://localhost:8004';
         this.preferLocal = true; // Force local processing only
@@ -293,8 +293,8 @@ class AIAnalysisService {
      */
     async isLocalServiceAvailable() {
         try {
-            const response = await axios.get(`${this.localLLMUrl}/health`, { timeout: 5000 });
-            return response.status === 200;
+            const response = await fetch(`${this.localLLMUrl}/health`, { timeout: 5000 });
+            return response.ok;
         } catch (error) {
             return false;
         }
@@ -548,6 +548,47 @@ class AIAnalysisService {
         });
 
         return Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b);
+    }
+
+    /**
+     * Smart conversation analysis with intelligent ticket generation
+     * @param {string} transcript - The conversation transcript
+     * @returns {Object} Smart analysis results with conversation insights and intelligent tickets
+     */
+    async analyzeConversationSmart(transcript) {
+        try {
+            console.log('Calling smart conversation analysis endpoint');
+            
+            const response = await fetch(`${this.localLLMUrl}/analyze-conversation-smart`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    transcript: transcript
+                }),
+                timeout: this.timeout
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Smart analysis failed: ${response.status} ${errorText}`);
+            }
+
+            const result = await response.json();
+            
+            console.log('Smart conversation analysis completed:', {
+                success: result.success,
+                insights_found: result.conversation_analysis?.insights_found,
+                tickets_generated: result.intelligent_tickets?.length
+            });
+
+            return result;
+
+        } catch (error) {
+            console.error('Smart conversation analysis error:', error);
+            throw new Error(`Smart conversation analysis failed: ${error.message}`);
+        }
     }
 }
 

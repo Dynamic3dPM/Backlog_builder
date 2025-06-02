@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+import json
 """
 Backlog Builder Local Hugging Face LLM Processing Service
 Advanced text analysis using local transformer models
+Optimized for RTX 4060 GPU (8GB VRAM)
 """
 
 import asyncio
@@ -48,29 +50,50 @@ try:
     try:
         nlp = spacy.load("en_core_web_sm")
     except OSError:
+        logger.warning("spaCy model 'en_core_web_sm' not found. Some NER features will be limited.")
         nlp = None
-        logger.warning("spaCy English model not found. Some NER features will be limited.")
 except ImportError:
-    spacy = None
+    logger.warning("spaCy not available. Some NER features will be disabled.")
     nlp = None
-    logger.warning("spaCy not available. Some NLP features will be limited.")
 
 # Download required NLTK data
 try:
-    import nltk
-    nltk.download('punkt', quiet=True)
-    nltk.download('stopwords', quiet=True)
-    nltk.download('vader_lexicon', quiet=True)
-except Exception as e:
-    logger.warning(f"NLTK data download failed: {e}")
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
 
-# Configuration
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
+
+# Import LangChain ticket generator
+try:
+    from langchain_ticket_generator import LangChainTicketGenerator, create_langchain_generator
+    LANGCHAIN_AVAILABLE = True
+    logger.info("LangChain ticket generator available")
+except ImportError as e:
+    LANGCHAIN_AVAILABLE = False
+    logger.warning(f"LangChain not available: {e}")
+
+# Optional spaCy import
+try:
+    import spacy
+    nlp = spacy.load("en_core_web_sm")
+    SPACY_AVAILABLE = True
+except (ImportError, OSError):
+    SPACY_AVAILABLE = False
+    logger.warning("spaCy model 'en_core_web_sm' not found. Some NER features will be limited.")
+
+# Configuration class
 class Config:
-    # Model configurations
+    """Configuration settings optimized for RTX 4060"""
+    
+    # Model configurations optimized for RTX 4060 (8GB VRAM)
     MODELS = {
         "summarization": {
             "primary": "facebook/bart-large-cnn",
-            "backup": "sshleifer/distilbart-cnn-12-6",
+            "backup": "sshleifer/distilbart-cnn-12-6",  # Smaller model for memory constraints
             "local_path": "/app/models/summarization"
         },
         "classification": {
@@ -82,18 +105,69 @@ class Config:
             "ner": "dbmdz/bert-large-cased-finetuned-conll03-english",
             "keywords": "all-MiniLM-L6-v2"
         },
-        "generation": {
+        "generation": { # General purpose, might be phased out for tickets
+            "primary": "google/flan-t5-base",
+            "backup": "t5-small"
+        },
+        "interpretation": {
+            "primary": "google/flan-t5-small",
+            "backup": "t5-small" # Fallback if flan-t5-small fails
+        },
+        "ticket_writing": {
+            "primary": "t5-small",
+            "backup": "google/flan-t5-small" # Fallback if t5-small fails
+        },
+        "ticket_generation": {
             "primary": "google/flan-t5-base",
             "backup": "t5-small"
         }
     }
     
-    # Processing settings
+    # Text processing settings
     MAX_CHUNK_SIZE = 512
     OVERLAP_SIZE = 50
     CACHE_TTL = 3600
+    
+    # GPU Configuration optimized for RTX 4060
     GPU_ENABLED = torch.cuda.is_available()
     DEVICE = "cuda" if GPU_ENABLED else "cpu"
+    
+    # RTX 4060 specific optimizations
+    if GPU_ENABLED:
+        # Check GPU memory and set appropriate settings
+        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3  # GB
+        logger.info(f"GPU detected: {torch.cuda.get_device_name(0)} with {gpu_memory:.1f}GB memory")
+        
+        # Enable mixed precision for RTX 4060
+        USE_MIXED_PRECISION = True
+        
+        # Memory management settings
+        MAX_MEMORY_USAGE = 0.85  # Use up to 85% of GPU memory
+        ENABLE_MEMORY_EFFICIENT_ATTENTION = True
+        
+        # Batch size optimization for 8GB VRAM
+        if gpu_memory >= 7.5:  # RTX 4060 8GB
+            MAX_BATCH_SIZE = 8
+            MODEL_MAX_LENGTH = 1024
+        else:
+            MAX_BATCH_SIZE = 4
+            MODEL_MAX_LENGTH = 512
+            
+        # Enable gradient checkpointing to save memory
+        USE_GRADIENT_CHECKPOINTING = True
+        
+        # Set memory fraction
+        torch.cuda.set_per_process_memory_fraction(MAX_MEMORY_USAGE)
+        
+        # Enable optimized attention
+        torch.backends.cuda.enable_flash_sdp(True)
+        
+    else:
+        USE_MIXED_PRECISION = False
+        MAX_BATCH_SIZE = 2
+        MODEL_MAX_LENGTH = 512
+        ENABLE_MEMORY_EFFICIENT_ATTENTION = False
+        USE_GRADIENT_CHECKPOINTING = False
     
     # Redis settings
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -180,29 +254,45 @@ embedding_model = None
 start_time = time.time()
 
 class ModelManager:
-    """Manages loading and caching of transformer models"""
+    """Manages loading and caching of transformer models with RTX 4060 optimizations"""
     
     def __init__(self):
         self.loaded_models = {}
         self.model_usage = {}
         self.last_cleanup = time.time()
+        self.memory_monitor = GPUMemoryMonitor() if Config.GPU_ENABLED else None
         
     async def load_model(self, model_name: str, model_type: str = "auto"):
-        """Load and cache a model"""
+        """Load and cache a model with GPU optimizations"""
         cache_key = f"{model_type}:{model_name}"
         
         if cache_key in self.loaded_models:
             self.model_usage[cache_key] = time.time()
             return self.loaded_models[cache_key]
         
+        # Check GPU memory before loading
+        if Config.GPU_ENABLED and self.memory_monitor:
+            available_memory = self.memory_monitor.get_available_memory()
+            if available_memory < 1.0:  # Less than 1GB available
+                logger.warning(f"Low GPU memory ({available_memory:.1f}GB). Cleaning up models...")
+                await self.cleanup_unused_models(max_age_hours=0.5)
+        
         logger.info(f"Loading model: {model_name} ({model_type})")
         
         try:
             if model_type == "summarization":
                 tokenizer = AutoTokenizer.from_pretrained(model_name)
-                model = AutoModelForSeq2SeqLM.from_pretrained(model_name)
+                model = AutoModelForSeq2SeqLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if Config.USE_MIXED_PRECISION else torch.float32,
+                    device_map="auto" if Config.GPU_ENABLED else None,
+                    low_cpu_mem_usage=True
+                )
+                
                 if Config.GPU_ENABLED:
                     model = model.to(Config.DEVICE)
+                    if Config.USE_GRADIENT_CHECKPOINTING:
+                        model.gradient_checkpointing_enable()
                 
                 self.loaded_models[cache_key] = {"model": model, "tokenizer": tokenizer}
                 
@@ -210,7 +300,12 @@ class ModelManager:
                 self.loaded_models[cache_key] = pipeline(
                     "text-classification",
                     model=model_name,
-                    device=0 if Config.GPU_ENABLED else -1
+                    device=0 if Config.GPU_ENABLED else -1,
+                    torch_dtype=torch.float16 if Config.USE_MIXED_PRECISION else torch.float32,
+                    model_kwargs={
+                        "low_cpu_mem_usage": True,
+                        "device_map": "auto" if Config.GPU_ENABLED else None
+                    }
                 )
                 
             elif model_type == "ner":
@@ -218,21 +313,40 @@ class ModelManager:
                     "ner",
                     model=model_name,
                     device=0 if Config.GPU_ENABLED else -1,
-                    aggregation_strategy="simple"
+                    aggregation_strategy="simple",
+                    torch_dtype=torch.float16 if Config.USE_MIXED_PRECISION else torch.float32,
+                    model_kwargs={
+                        "low_cpu_mem_usage": True,
+                        "device_map": "auto" if Config.GPU_ENABLED else None
+                    }
                 )
                 
             elif model_type == "generation":
                 tokenizer = T5Tokenizer.from_pretrained(model_name)
-                model = T5ForConditionalGeneration.from_pretrained(model_name)
+                model = T5ForConditionalGeneration.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if Config.USE_MIXED_PRECISION else torch.float32,
+                    device_map="auto" if Config.GPU_ENABLED else None,
+                    low_cpu_mem_usage=True
+                )
+                
                 if Config.GPU_ENABLED:
                     model = model.to(Config.DEVICE)
+                    if Config.USE_GRADIENT_CHECKPOINTING:
+                        model.gradient_checkpointing_enable()
                 
                 self.loaded_models[cache_key] = {"model": model, "tokenizer": tokenizer}
                 
             else:
                 # Auto mode
                 tokenizer = AutoTokenizer.from_pretrained(model_name)
-                model = AutoModel.from_pretrained(model_name)
+                model = AutoModel.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if Config.USE_MIXED_PRECISION else torch.float32,
+                    device_map="auto" if Config.GPU_ENABLED else None,
+                    low_cpu_mem_usage=True
+                )
+                
                 if Config.GPU_ENABLED:
                     model = model.to(Config.DEVICE)
                 
@@ -241,35 +355,93 @@ class ModelManager:
             self.model_usage[cache_key] = time.time()
             logger.info(f"Model {model_name} loaded successfully")
             
+            # Log GPU memory usage after loading
+            if Config.GPU_ENABLED and self.memory_monitor:
+                memory_info = self.memory_monitor.get_memory_info()
+                logger.info(f"GPU Memory after loading: {memory_info}")
+            
             return self.loaded_models[cache_key]
             
         except Exception as e:
-            logger.error(f"Failed to load model {model_name}: {e}")
-            raise HTTPException(status_code=500, detail=f"Model loading failed: {e}")
+            logger.error(f"Failed to load model {model_name}: {str(e)}")
+            
+            # Try backup model if available
+            if model_type in Config.MODELS and "backup" in Config.MODELS[model_type]:
+                backup_model = Config.MODELS[model_type]["backup"]
+                logger.info(f"Trying backup model: {backup_model}")
+                return await self.load_model(backup_model, model_type)
+            
+            raise HTTPException(status_code=500, detail={"error": f"Failed to load model: {e}"})
     
     async def cleanup_unused_models(self, max_age_hours: float = 2):
-        """Remove unused models from memory"""
+        """Remove unused models from memory with aggressive cleanup for GPU"""
         current_time = time.time()
         max_age_seconds = max_age_hours * 3600
         
-        to_remove = []
+        models_to_remove = []
         for cache_key, last_used in self.model_usage.items():
             if current_time - last_used > max_age_seconds:
-                to_remove.append(cache_key)
+                models_to_remove.append(cache_key)
         
-        for cache_key in to_remove:
-            logger.info(f"Cleaning up unused model: {cache_key}")
+        for cache_key in models_to_remove:
             if cache_key in self.loaded_models:
+                logger.info(f"Removing unused model: {cache_key}")
+                
+                # Properly cleanup model from GPU memory
+                model_data = self.loaded_models[cache_key]
+                if isinstance(model_data, dict) and "model" in model_data:
+                    model = model_data["model"]
+                    if hasattr(model, 'cpu'):
+                        model.cpu()
+                    del model
+                
                 del self.loaded_models[cache_key]
-            del self.model_usage[cache_key]
-            
-        if to_remove:
-            gc.collect()
-            if Config.GPU_ENABLED:
-                torch.cuda.empty_cache()
+                del self.model_usage[cache_key]
+        
+        # Force garbage collection and clear GPU cache
+        gc.collect()
+        if Config.GPU_ENABLED:
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+        
+        self.last_cleanup = current_time
+        logger.info(f"Model cleanup completed. Removed {len(models_to_remove)} models")
 
-# Initialize model manager
-model_manager = ModelManager()
+
+class GPUMemoryMonitor:
+    """Monitor GPU memory usage for RTX 4060"""
+    
+    def __init__(self):
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA not available")
+        self.device = torch.cuda.current_device()
+    
+    def get_memory_info(self) -> Dict[str, float]:
+        """Get current GPU memory information in GB"""
+        allocated = torch.cuda.memory_allocated(self.device) / 1024**3
+        cached = torch.cuda.memory_reserved(self.device) / 1024**3
+        total = torch.cuda.get_device_properties(self.device).total_memory / 1024**3
+        
+        return {
+            "allocated_gb": allocated,
+            "cached_gb": cached,
+            "total_gb": total,
+            "available_gb": total - cached,
+            "utilization_percent": (cached / total) * 100
+        }
+    
+    def get_available_memory(self) -> float:
+        """Get available GPU memory in GB"""
+        return self.get_memory_info()["available_gb"]
+    
+    def is_memory_available(self, required_gb: float) -> bool:
+        """Check if enough memory is available"""
+        return self.get_available_memory() >= required_gb
+    
+    def clear_cache(self):
+        """Clear GPU cache"""
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
 
 class TextProcessor:
     """Advanced text processing and analysis"""
@@ -318,25 +490,71 @@ class TextProcessor:
     
     def detect_action_items_patterns(self, text: str) -> List[Dict]:
         """Use regex patterns to detect action items"""
+        # Improved patterns for natural meeting language
         patterns = [
-            r"(?:action item|todo|task|assign|responsible):?\s*(.+?)(?:\.|$|;)",
-            r"(.+?)\s+(?:will|should|needs to|must)\s+(.+?)(?:\.|$|;)",
-            r"(?:@|assign|assigned to)\s*(\w+)\s*[:-]?\s*(.+?)(?:\.|$|;)",
-            r"(?:deadline|due|by)\s*([^.;]+?)(?:\.|$|;)",
+            # Pattern: "Person needs to/should/will do something"
+            r"(\w+)\s+(?:needs to|should|will|must)\s+([^.!?;]+)",
+            # Pattern: "Someone is responsible for something"
+            r"(\w+)\s+(?:is responsible for|will handle|will take care of|will coordinate)\s+([^.!?;]+)",
+            # Pattern: "Action item: something" or "TODO: something"
+            r"(?:action item|todo|task|assign|responsible):?\s*([^.!?;]+)",
+            # Pattern: "We need to do something" or "Team should do something"
+            r"(?:we|team|everyone)\s+(?:need to|should|must|will)\s+([^.!?;]+)",
+            # Pattern: "Something needs to be done by someone"
+            r"([^.!?;]+?)\s+(?:by|from)\s+(\w+)",
+            # Pattern: "Create/Update/Fix/Implement something"
+            r"(?:create|update|fix|implement|finalize|coordinate|document)\s+([^.!?;]+)",
         ]
         
         action_items = []
+        sentences = re.split(r'[.!?]+', text)
         
-        for pattern in patterns:
-            matches = re.finditer(pattern, text, re.IGNORECASE)
-            for match in matches:
-                action_items.append({
-                    "text": match.group(0),
-                    "groups": match.groups(),
-                    "confidence": 0.6  # Pattern-based confidence
-                })
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if len(sentence) < 10:  # Skip very short sentences
+                continue
+                
+            for pattern in patterns:
+                matches = re.finditer(pattern, sentence, re.IGNORECASE)
+                for match in matches:
+                    # Extract the full sentence as the task
+                    task_text = sentence.strip()
+                    
+                    # Try to identify assignee from the match groups
+                    assignee = None
+                    groups = match.groups()
+                    
+                    # Check if first group looks like a person name (capitalized)
+                    if groups and len(groups) > 0:
+                        potential_assignee = groups[0].strip()
+                        if potential_assignee and potential_assignee[0].isupper() and len(potential_assignee.split()) <= 2:
+                            assignee = potential_assignee
+                    
+                    # Skip if task is too short or doesn't seem actionable
+                    if len(task_text) < 15:
+                        continue
+                        
+                    action_items.append({
+                        "text": task_text,
+                        "assignee": assignee,
+                        "groups": groups,
+                        "confidence": 0.7  # Higher confidence for improved patterns
+                    })
+                    break  # Only match once per sentence
         
-        return action_items
+        # Remove duplicates based on similar text
+        unique_items = []
+        for item in action_items:
+            is_duplicate = False
+            for existing in unique_items:
+                # Simple similarity check
+                if len(set(item["text"].lower().split()) & set(existing["text"].lower().split())) / max(len(item["text"].split()), len(existing["text"].split())) > 0.7:
+                    is_duplicate = True
+                    break
+            if not is_duplicate:
+                unique_items.append(item)
+        
+        return unique_items
     
     def extract_named_entities(self, text: str) -> Dict[str, List[str]]:
         """Extract named entities using spaCy"""
@@ -417,39 +635,58 @@ class MeetingAnalyzer:
             
         except Exception as e:
             logger.error(f"Meeting analysis failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Analysis failed: {e}")
+            raise HTTPException(status_code=500, detail={"error": f"Analysis failed: {e}"})
     
     async def _generate_summary(self, transcript: str) -> Summary:
-        """Generate meeting summary using BART"""
+        """Generate meeting summary using BART with RTX 4060 optimizations"""
         try:
             model_info = await model_manager.load_model(
                 Config.MODELS["summarization"]["primary"],
                 "summarization"
             )
             
-            # Create summarization pipeline
+            # Create summarization pipeline with GPU optimizations
             summarizer = pipeline(
                 "summarization",
                 model=model_info["model"],
                 tokenizer=model_info["tokenizer"],
-                device=0 if Config.GPU_ENABLED else -1
+                device=0 if Config.GPU_ENABLED else -1,
+                torch_dtype=torch.float16 if Config.USE_MIXED_PRECISION else torch.float32,
+                batch_size=Config.MAX_BATCH_SIZE if Config.GPU_ENABLED else 1
             )
             
-            # Handle long text by chunking
-            chunks = text_processor.chunk_text(transcript, max_length=1024)
+            # Handle long text by chunking with optimized chunk size
+            chunks = text_processor.chunk_text(transcript, max_length=Config.MODEL_MAX_LENGTH)
             chunk_summaries = []
             
-            for chunk in chunks:
-                if len(chunk.strip()) < 50:  # Skip very short chunks
+            # Process chunks in batches for GPU efficiency
+            batch_size = Config.MAX_BATCH_SIZE if Config.GPU_ENABLED else 1
+            for i in range(0, len(chunks), batch_size):
+                batch_chunks = chunks[i:i + batch_size]
+                valid_chunks = [chunk for chunk in batch_chunks if len(chunk.strip()) >= 50]
+                
+                if not valid_chunks:
                     continue
                 
-                summary = summarizer(
-                    chunk,
-                    max_length=150,
-                    min_length=30,
-                    do_sample=False
-                )
-                chunk_summaries.append(summary[0]['summary_text'])
+                # Process batch
+                with torch.cuda.amp.autocast(enabled=Config.USE_MIXED_PRECISION):
+                    summaries = summarizer(
+                        valid_chunks,
+                        max_length=150,
+                        min_length=30,
+                        do_sample=False,
+                        truncation=True
+                    )
+                
+                # Extract summary texts
+                if isinstance(summaries, list):
+                    for summary in summaries:
+                        if isinstance(summary, list):
+                            chunk_summaries.extend([s['summary_text'] for s in summary])
+                        else:
+                            chunk_summaries.append(summary['summary_text'])
+                else:
+                    chunk_summaries.append(summaries['summary_text'])
             
             # Combine chunk summaries
             combined_summary = " ".join(chunk_summaries)
@@ -488,12 +725,10 @@ class MeetingAnalyzer:
     async def _extract_action_items(self, transcript: str) -> List[ActionItem]:
         """Extract action items using patterns and NLP"""
         try:
-            action_items = []
-            
-            # Use pattern-based extraction
+            # Use improved pattern-based extraction
             pattern_items = text_processor.detect_action_items_patterns(transcript)
             
-            # Use NER for person detection
+            # Use NER for additional person detection if available
             entities = text_processor.extract_named_entities(transcript)
             people = entities.get('PERSON', [])
             
@@ -506,32 +741,56 @@ class MeetingAnalyzer:
             except:
                 classifier = None
             
+            result_items = []
+            
             for item in pattern_items:
                 # Extract task and assignee
                 task_text = item["text"]
-                assignee = None
+                assignee = item.get("assignee")
                 
-                # Simple assignee detection
-                for person in people:
-                    if person.lower() in task_text.lower():
-                        assignee = person
+                # If no assignee found in pattern, try NER detection
+                if not assignee and people:
+                    for person in people:
+                        if person.lower() in task_text.lower():
+                            assignee = person
+                            break
+                
+                # Priority detection (improved heuristics)
+                priority = "medium"
+                task_lower = task_text.lower()
+                
+                if any(word in task_lower for word in ["urgent", "asap", "critical", "immediately", "emergency", "high priority"]):
+                    priority = "high"
+                elif any(word in task_lower for word in ["later", "when possible", "low priority", "nice to have", "eventually"]):
+                    priority = "low"
+                elif any(word in task_lower for word in ["friday", "deadline", "due", "by end of", "before"]):
+                    priority = "high"
+                
+                # Extract potential deadline information
+                deadline = None
+                deadline_patterns = [
+                    r"by\s+(friday|monday|tuesday|wednesday|thursday|saturday|sunday)",
+                    r"due\s+([^.!?;]+)",
+                    r"deadline\s+([^.!?;]+)",
+                    r"by\s+end\s+of\s+([^.!?;]+)",
+                    r"before\s+([^.!?;]+)"
+                ]
+                
+                for pattern in deadline_patterns:
+                    match = re.search(pattern, task_lower)
+                    if match:
+                        deadline = match.group(1).strip()
                         break
                 
-                # Priority detection (simple heuristic)
-                priority = "medium"
-                if any(word in task_text.lower() for word in ["urgent", "asap", "critical", "immediately"]):
-                    priority = "high"
-                elif any(word in task_text.lower() for word in ["later", "when possible", "low priority"]):
-                    priority = "low"
-                
-                action_items.append(ActionItem(
+                result_items.append(ActionItem(
                     task=task_text,
                     assignee=assignee,
+                    deadline=deadline,
                     priority=priority,
                     confidence=item["confidence"]
                 ))
             
-            return action_items
+            return result_items
             
         except Exception as e:
             logger.error(f"Action item extraction failed: {e}")
@@ -614,97 +873,442 @@ meeting_analyzer = MeetingAnalyzer()
 class TicketGenerator:
     """Generate structured tickets from action items"""
     
+    def __init__(self):
+        """Initialize ticket generator with LangChain support."""
+        self.langchain_generator = None
+        self.use_langchain = LANGCHAIN_AVAILABLE and os.getenv("USE_LANGCHAIN", "true").lower() == "true"
+        logger.info(f"TicketGenerator initialized - LangChain enabled: {self.use_langchain}")
+    
     async def generate_ticket(self, request: TicketGenerationRequest) -> GeneratedTicket:
         """Generate a structured ticket from action item"""
         try:
-            # Load prompt templates - try multiple paths for different environments
-            template_paths = [
-                "prompt-templates.json",  # Local development
-                "/app/llm-processing/prompt-templates.json",  # Docker container
-                "./prompt-templates.json",  # Current directory
-                os.path.join(os.path.dirname(__file__), "prompt-templates.json")  # Same directory as script
-            ]
-            
-            templates = None
-            for path in template_paths:
+            # Try LangChain approach first if available
+            if self.use_langchain and LANGCHAIN_AVAILABLE:
                 try:
-                    with open(path, "r") as f:
-                        templates = json.load(f)
-                        break
-                except FileNotFoundError:
-                    continue
+                    return await self._generate_with_langchain(request)
+                except Exception as e:
+                    logger.warning(f"LangChain generation failed, falling back to traditional approach: {e}")
             
-            if templates is None:
-                raise FileNotFoundError("prompt-templates.json not found in any expected location")
-            
-            # Select appropriate template
-            if request.ticket_type == "user_story":
-                template = templates["templates"]["ticket_generation"]["user_story"]["agile"]
-            elif request.ticket_type == "bug":
-                template = templates["templates"]["ticket_generation"]["bug_report"]["standard"]
-            else:
-                template = templates["templates"]["ticket_generation"]["feature_request"]["detailed"]
-            
-            # Load generation model
-            model_info = await model_manager.load_model(
-                Config.MODELS["generation"]["primary"],
-                "generation"
-            )
-            
-            # Prepare prompt
-            prompt = template["prompt"].replace("{{action_item}}", request.action_item)
-            prompt = prompt.replace("{{context}}", request.context)
-            
-            # Generate ticket content
-            generator = pipeline(
-                "text2text-generation",
-                model=model_info["model"],
-                tokenizer=model_info["tokenizer"],
-                device=0 if Config.GPU_ENABLED else -1
-            )
-            
-            result = generator(
-                prompt,
-                max_length=template.get("max_tokens", 500),
-                temperature=template.get("temperature", 0.3),
-                do_sample=True
-            )
-            
-            generated_text = result[0]["generated_text"]
-            
-            # Parse generated ticket (simplified)
-            title = self._extract_title(generated_text)
-            description = self._extract_description(generated_text)
-            acceptance_criteria = self._extract_acceptance_criteria(generated_text)
-            priority = self._extract_priority(generated_text)
-            labels = self._extract_labels(request.action_item)
-            
-            return GeneratedTicket(
-                title=title,
-                description=description,
-                acceptance_criteria=acceptance_criteria,
-                priority=priority,
-                labels=labels,
-                confidence=0.8
-            )
+            # Fallback to traditional approach
+            return await self._generate_traditional(request)
             
         except Exception as e:
             logger.error(f"Ticket generation failed: {e}")
-            raise HTTPException(status_code=500, detail=f"Ticket generation failed: {e}")
+            # Return a basic fallback ticket
+            return GeneratedTicket(
+                title=self._extract_simple_title(request.action_item),
+                description=f"As a User, I want to {request.action_item.lower()} so that {request.context[:100]}...",
+                acceptance_criteria=["Implementation complete", "Tests passing"],
+                priority="medium",
+                labels=[request.ticket_type],
+                estimated_effort=None,
+                confidence=0.3
+            )
+    
+    async def _generate_with_langchain(self, request: TicketGenerationRequest) -> GeneratedTicket:
+        """Generate ticket using LangChain approach."""
+        logger.info("Generating ticket with LangChain...")
+        
+        # Initialize LangChain generator if not already done
+        if not self.langchain_generator:
+            # Load a model for LangChain
+            model_info = await model_manager.load_model(
+                Config.MODELS["ticket_generation"]["primary"],
+                "generation"
+            )
+            
+            # Create pipeline for LangChain
+            model_pipeline = pipeline(
+                "text2text-generation",
+                model=model_info["model"],
+                tokenizer=model_info["tokenizer"],
+                device=0 if Config.GPU_ENABLED else -1,
+                max_new_tokens=200,
+                temperature=0.3,
+                do_sample=True
+            )
+            
+            self.langchain_generator = create_langchain_generator(model_pipeline)
+        
+        # Generate ticket using LangChain
+        result = self.langchain_generator.generate_ticket(
+            action_item=request.action_item,
+            context=request.context,
+            ticket_type=request.ticket_type
+        )
+        
+        # Convert to GeneratedTicket format
+        return GeneratedTicket(
+            title=result["title"],
+            description=result["description"],
+            acceptance_criteria=result["acceptance_criteria"],
+            priority=result["priority"],
+            labels=result["labels"],
+            estimated_effort=result["estimated_effort"],
+            confidence=result["confidence"]
+        )
+    
+    async def _generate_traditional(self, request: TicketGenerationRequest) -> GeneratedTicket:
+        """Generate ticket using traditional template-based approach."""
+        logger.info("Generating ticket with traditional approach...")
+        
+        # Load prompt templates - try multiple paths for different environments
+        template_paths = [
+            "prompt-templates.json",  # Local development
+            "/app/llm-processing/prompt-templates.json",  # Docker container
+            "./prompt-templates.json",  # Current directory
+            os.path.join(os.path.dirname(__file__), "prompt-templates.json")  # Same directory as script
+        ]
+        
+        templates = None
+        for path in template_paths:
+            try:
+                with open(path, "r") as f:
+                    templates = json.load(f)
+                    break
+            except FileNotFoundError:
+                continue
+        
+        if templates is None:
+            raise FileNotFoundError("prompt-templates.json not found in any expected location")
+        
+        # Get templates from the correct structure
+        interpretation_template = templates["templates"]["task_interpretation"]["default"]
+        user_story_template = templates["templates"]["ticket_generation"]["user_story"]["agile"]
+        
+        # STAGE 1: Interpretation LLM Call
+        logger.info("Loading interpretation model...")
+        interpretation_model_info = await model_manager.load_model(
+            Config.MODELS["interpretation"]["primary"],
+            "generation"  # Use generation type for T5 models
+        )
+        
+        interpretation_generator = pipeline(
+            "text2text-generation",
+            model=interpretation_model_info["model"],
+            tokenizer=interpretation_model_info["tokenizer"],
+            device=0 if Config.GPU_ENABLED else -1
+        )
+        logger.info(f"Using interpretation model: {Config.MODELS['interpretation']['primary']}")
+
+        # Build interpretation prompt from template
+        interpretation_prompt = interpretation_template["prompt"]
+        interpretation_prompt = interpretation_prompt.replace("{{action_item}}", request.action_item)
+        interpretation_prompt = interpretation_prompt.replace("{{context}}", request.context)
+        
+        logger.debug(f"Interpretation Prompt: {interpretation_prompt[:500]}...")
+
+        interpretation_result = interpretation_generator(
+            interpretation_prompt,
+            max_length=interpretation_template.get("max_tokens", 150),
+            temperature=interpretation_template.get("temperature", 0.2),
+            do_sample=True
+        )
+        raw_interpreted_text = interpretation_result[0]["generated_text"].strip()
+        logger.info(f"Raw Interpreted Text from LLM: {raw_interpreted_text}")
+
+        interpreted_data = None
+        try:
+            # The LLM might sometimes wrap the JSON in backticks or other text
+            # Attempt to extract JSON block if present
+            if raw_interpreted_text.startswith("```json") and raw_interpreted_text.endswith("```"):
+                json_str = raw_interpreted_text[len("```json"):-(len("```"))].strip()
+            elif raw_interpreted_text.startswith("```") and raw_interpreted_text.endswith("```"):
+                json_str = raw_interpreted_text[len("```"):-(len("```"))].strip()
+            else:
+                json_str = raw_interpreted_text
+            
+            interpreted_data = json.loads(json_str)
+            logger.info(f"Parsed Interpreted JSON: {interpreted_data}")
+
+            # Validate required keys
+            required_keys = ["problem", "desired_outcome", "user_role"]
+            if not all(key in interpreted_data for key in required_keys):
+                logger.error(f"Interpretation JSON is missing one or more required keys: {required_keys}. Data: {interpreted_data}")
+                # Fallback to using the raw action item if parsing fails or keys are missing
+                interpreted_data = {
+                    "problem": request.action_item, 
+                    "desired_outcome": "Not specified", 
+                    "user_role": "User"
+                }
+                logger.warning(f"Falling back to default interpretation due to parsing/validation error.")
+
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to parse interpretation JSON: {e}. Raw text: {raw_interpreted_text}")
+            # Fallback strategy: use the original action item if JSON parsing fails
+            interpreted_data = {
+                "problem": request.action_item, 
+                "desired_outcome": "Not specified", 
+                "user_role": "User"
+            }
+            logger.warning(f"Falling back to default interpretation due to JSONDecodeError.")
+        except Exception as e:
+            logger.error(f"An unexpected error occurred during interpretation processing: {e}")
+            interpreted_data = {
+                "problem": request.action_item, 
+                "desired_outcome": "Not specified", 
+                "user_role": "User"
+            }
+            logger.warning(f"Falling back to default interpretation due to unexpected error.")
+
+        # STAGE 2: Ticket Creation LLM Call (using the structured interpreted data)
+        logger.info("Loading ticket writing model...")
+        ticket_model_info = await model_manager.load_model(
+            Config.MODELS["ticket_writing"]["primary"],
+            "generation"  # Use generation type for T5 models
+        )
+        ticket_generator_pipeline = pipeline(
+            "text2text-generation",
+            model=ticket_model_info["model"],
+            tokenizer=ticket_model_info["tokenizer"],
+            device=0 if Config.GPU_ENABLED else -1
+        )
+        logger.info(f"Using ticket writing model: {Config.MODELS['ticket_writing']['primary']}")
+
+        # Build ticket prompt from template
+        ticket_prompt = user_story_template["prompt"]
+        ticket_prompt = ticket_prompt.replace("{{interpreted_problem}}", str(interpreted_data.get("problem", request.action_item)))
+        ticket_prompt = ticket_prompt.replace("{{interpreted_outcome}}", str(interpreted_data.get("desired_outcome", "Achieve task goal")))
+        ticket_prompt = ticket_prompt.replace("{{user_role}}", str(interpreted_data.get("user_role", "User")))
+        # Note: The template doesn't have {{context}} placeholder, so we skip this replacement
+
+        logger.debug(f"Populated Ticket Prompt for Stage 2: {ticket_prompt[:500]}...") # Log start of prompt 
+
+        ticket_generation_result = ticket_generator_pipeline(
+            ticket_prompt,
+            max_length=user_story_template.get("max_tokens", 500),
+            temperature=user_story_template.get("temperature", 0.3),
+            do_sample=True
+        )
+        generated_text = ticket_generation_result[0]["generated_text"]
+        
+        # Parse generated ticket
+        title = self._extract_title(generated_text)
+        description = self._extract_description(generated_text)
+        acceptance_criteria = self._extract_acceptance_criteria(generated_text)
+        priority = self._extract_priority(generated_text)
+        labels = self._extract_labels(request.action_item)
+        
+        return GeneratedTicket(
+            title=title,
+            description=description,
+            acceptance_criteria=acceptance_criteria,
+            priority=priority,
+            labels=labels,
+            confidence=0.8
+        )
+    
+    def _extract_simple_title(self, action_item: str) -> str:
+        """Extract a simple title from action item for fallback scenarios."""
+        # Remove common prefixes
+        title = action_item.replace("We need to", "").replace("we should", "").replace("The team needs to", "").strip()
+        
+        # Ensure it starts with an action verb
+        if not any(title.lower().startswith(verb.lower()) for verb in ['implement', 'create', 'fix', 'update', 'add', 'remove', 'configure', 'setup', 'build', 'deploy']):
+            if 'bug' in title.lower() or 'error' in title.lower():
+                title = f"Fix {title}"
+            elif 'new' in title.lower():
+                title = f"Implement {title}"
+            else:
+                title = f"Update {title}"
+        
+        # Limit to 40 characters
+        if len(title) > 40:
+            words = title.split()
+            truncated = []
+            length = 0
+            for word in words:
+                if length + len(word) + 1 <= 40:
+                    truncated.append(word)
+                    length += len(word) + 1
+                else:
+                    break
+            title = ' '.join(truncated)
+        
+        return title.strip()
     
     def _extract_title(self, text: str) -> str:
-        """Extract title from generated text"""
-        lines = text.split('\n')
-        for line in lines:
-            if 'title:' in line.lower():
-                return line.split(':', 1)[1].strip()
+        """Extract a concise, action-oriented ticket title from generated text."""
+        import re
         
-        # Fallback: use first line
-        return lines[0][:100] if lines else "Generated Ticket"
+        # 1. Try to find '**Title:**' or 'title:' using regex (case-insensitive)
+        match = re.search(r'\*\*Title:\*\*\s*(.+)', text, re.IGNORECASE)
+        if match:
+            title = match.group(1).strip()
+            # Remove bracketed instruction text
+            title = re.sub(r'\[.*?\]', '', title).strip()
+            # Remove common instruction phrases
+            title = re.sub(r'(Write a|Create a|Generate a|Make a)\s+', '', title, flags=re.IGNORECASE).strip()
+            if title and not title.lower().startswith(('short', 'actionable', 'concise')):
+                return self._shorten_title(title)
+                
+        for line in text.split('\n'):
+            if 'title:' in line.lower():
+                title = line.split(':', 1)[1].strip()
+                # Remove bracketed instruction text
+                title = re.sub(r'\[.*?\]', '', title).strip()
+                if title and not title.lower().startswith(('short', 'actionable', 'concise')):
+                    return self._shorten_title(title)
+        
+        # 2. Extract action items and convert to concise titles
+        action_words = ['implement', 'create', 'update', 'fix', 'add', 'remove', 'configure', 'setup', 'build', 'deploy']
+        
+        # Look for action-oriented phrases
+        sentences = re.split(r'[.!?]\s+', text.strip())
+        for sentence in sentences:
+            sentence = sentence.strip()
+            if any(action in sentence.lower() for action in action_words):
+                return self._shorten_title(sentence)
+        
+        # 3. Fallback: use first meaningful phrase
+        fallback = text.strip().split('\n')[0] if text.strip() else "Task"
+        
+        # Remove common prefixes
+        prefixes_to_remove = [
+            'we need to', 'we should', 'it is necessary to', 'the team needs to',
+            'action item:', 'todo:', 'task:', 'requirement:'
+        ]
+        
+        fallback_lower = fallback.lower()
+        for prefix in prefixes_to_remove:
+            if fallback_lower.startswith(prefix):
+                fallback = fallback[len(prefix):].strip()
+                break
+        
+        return self._shorten_title(fallback)
+    
+    def _shorten_title(self, title: str) -> str:
+        """Shorten title to max 40 characters while preserving meaning"""
+        title = title.strip()
+        
+        # Remove personal pronouns and make more direct
+        pronoun_replacements = {
+            'we need to': '',
+            'you need to': '',
+            'i need to': '',
+            'we need': '',
+            'you need': '',
+            'i need': '',
+            'we should': '',
+            'you should': '',
+            'i should': '',
+            'we must': '',
+            'you must': '',
+            'i must': '',
+            'we can': '',
+            'you can': '',
+            'i can': '',
+            'we will': '',
+            'you will': '',
+            'i will': '',
+            'we have to': '',
+            'you have to': '',
+            'i have to': '',
+            'we want to': '',
+            'you want to': '',
+            'i want to': '',
+            'let us': '',
+            'let\'s': '',
+            'we are': '',
+            'you are': '',
+            'i am': '',
+            'we\'re': '',
+            'you\'re': '',
+            'i\'m': ''
+        }
+        
+        title_lower = title.lower()
+        for phrase, replacement in pronoun_replacements.items():
+            if title_lower.startswith(phrase):
+                title = title[len(phrase):].strip()
+                break
+        
+        # Additional cleanup for remaining pronouns at start
+        words = title.split()
+        if words and words[0].lower() in ['we', 'you', 'i', 'us', 'me']:
+            words = words[1:]
+            title = ' '.join(words)
+        
+        # Remove unnecessary words
+        unnecessary_words = ['the', 'a', 'an', 'that', 'which', 'this', 'these', 'those', 'please', 'from', 'by', 'with', 'for']
+        words = title.split()
+        
+        # Convert to imperative form if needed
+        if words:
+            first_word = words[0].lower()
+            
+            # Convert common patterns to imperative
+            imperative_conversions = {
+                'creating': 'create',
+                'implementing': 'implement',
+                'updating': 'update',
+                'fixing': 'fix',
+                'adding': 'add',
+                'removing': 'remove',
+                'configuring': 'configure',
+                'setting': 'setup',
+                'building': 'build',
+                'deploying': 'deploy',
+                'testing': 'test',
+                'reviewing': 'review',
+                'getting': 'get',
+                'making': 'make',
+                'ensuring': 'ensure',
+                'checking': 'check'
+            }
+            
+            if first_word in imperative_conversions:
+                words[0] = imperative_conversions[first_word].capitalize()
+            elif first_word in ['implement', 'create', 'update', 'fix', 'add', 'remove', 'configure', 'setup', 'build', 'deploy', 'test', 'review', 'get', 'make', 'ensure', 'check']:
+                words[0] = words[0].capitalize()
+        
+        # Keep action words at the beginning, filter unnecessary words from the rest
+        if words and words[0].lower() in ['implement', 'create', 'update', 'fix', 'add', 'remove', 'configure', 'setup', 'build', 'deploy', 'test', 'review', 'get', 'make', 'ensure', 'check']:
+            # Keep first word, filter unnecessary words from the rest
+            filtered_words = [words[0]] + [w for w in words[1:] if w.lower() not in unnecessary_words]
+        else:
+            filtered_words = [w for w in words if w.lower() not in unnecessary_words]
+        
+        shortened = ' '.join(filtered_words)
+        
+        # Final cleanup - capitalize first word if it's an action
+        if shortened:
+            first_word = shortened.split()[0].lower()
+            if first_word in ['feedback', 'designs', 'tasks', 'testing', 'documentation']:
+                # Convert nouns to verbs where possible
+                noun_to_verb = {
+                    'feedback': 'Get feedback',
+                    'designs': 'Review designs', 
+                    'tasks': 'Complete tasks',
+                    'testing': 'Perform testing',
+                    'documentation': 'Create documentation'
+                }
+                if first_word in noun_to_verb:
+                    shortened = noun_to_verb[first_word] + shortened[len(first_word):]
+        
+        # If still too long, truncate at word boundary
+        if len(shortened) > 40:
+            cutoff = shortened[:37].rsplit(' ', 1)[0]
+            return cutoff + '...'
+        
+        return shortened if shortened else "Task"
     
     def _extract_description(self, text: str) -> str:
-        """Extract description from generated text"""
-        # Simple extraction - in production, this would be more sophisticated
+        """Extract description from generated text with better user story parsing"""
+        import re
+        
+        # Look for description section
+        desc_match = re.search(r'\*\*Description:\*\*\s*(.*?)(?:\*\*|$)', text, re.DOTALL | re.IGNORECASE)
+        if desc_match:
+            description = desc_match.group(1).strip()
+            return description[:500] + "..." if len(description) > 500 else description
+        
+        # Fallback: look for user story pattern
+        user_story_match = re.search(r'As a .+?, I want .+? so that .+?\.', text, re.IGNORECASE)
+        if user_story_match:
+            return user_story_match.group(0)
+        
+        # Final fallback
         return text[:500] + "..." if len(text) > 500 else text
     
     def _extract_acceptance_criteria(self, text: str) -> List[str]:
@@ -726,8 +1330,8 @@ class TicketGenerator:
     def _extract_priority(self, text: str) -> str:
         """Extract priority from generated text"""
         priority_keywords = {
-            "high": ["urgent", "critical", "asap", "immediately"],
-            "low": ["later", "when possible", "low priority"],
+            "high": ["urgent", "critical", "asap", "immediately", "emergency", "high priority"],
+            "low": ["later", "when possible", "low priority", "nice to have", "eventually"]
         }
         
         text_lower = text.lower()
@@ -794,17 +1398,88 @@ async def initialize_services():
     except Exception as e:
         logger.warning(f"Embedding model failed to load: {e}")
 
+# Initialize model manager
+model_manager = ModelManager()
+
 # API Endpoints
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {
+    """Health check endpoint with RTX 4060 GPU information"""
+    health_info = {
         "status": "healthy",
         "models_loaded": len(model_manager.loaded_models),
         "gpu_available": Config.GPU_ENABLED,
         "uptime": time.time() - start_time,
         "device": Config.DEVICE
     }
+    
+    # Add GPU-specific information for RTX 4060
+    if Config.GPU_ENABLED and model_manager.memory_monitor:
+        try:
+            memory_info = model_manager.memory_monitor.get_memory_info()
+            health_info.update({
+                "gpu_name": torch.cuda.get_device_name(0),
+                "gpu_memory": memory_info,
+                "mixed_precision_enabled": Config.USE_MIXED_PRECISION,
+                "max_batch_size": Config.MAX_BATCH_SIZE,
+                "model_max_length": Config.MODEL_MAX_LENGTH
+            })
+        except Exception as e:
+            health_info["gpu_error"] = str(e)
+    
+    return health_info
+
+@app.get("/gpu/memory")
+async def gpu_memory_status():
+    """Get detailed GPU memory information for RTX 4060"""
+    if not Config.GPU_ENABLED:
+        raise HTTPException(status_code=404, detail="GPU not available")
+    
+    if not model_manager.memory_monitor:
+        raise HTTPException(status_code=500, detail="GPU memory monitor not initialized")
+    
+    try:
+        memory_info = model_manager.memory_monitor.get_memory_info()
+        return {
+            "gpu_name": torch.cuda.get_device_name(0),
+            "memory_info": memory_info,
+            "recommendations": {
+                "memory_usage_ok": memory_info["utilization_percent"] < 90,
+                "cleanup_needed": memory_info["available_gb"] < 1.0,
+                "can_load_large_model": memory_info["available_gb"] > 2.0
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get GPU memory info: {str(e)}")
+
+@app.post("/gpu/cleanup")
+async def cleanup_gpu_memory():
+    """Manually trigger GPU memory cleanup"""
+    if not Config.GPU_ENABLED:
+        raise HTTPException(status_code=404, detail="GPU not available")
+    
+    try:
+        # Get memory before cleanup
+        before_memory = model_manager.memory_monitor.get_memory_info() if model_manager.memory_monitor else None
+        
+        # Cleanup models
+        await model_manager.cleanup_unused_models(max_age_hours=0.1)  # Aggressive cleanup
+        
+        # Clear GPU cache
+        if model_manager.memory_monitor:
+            model_manager.memory_monitor.clear_cache()
+        
+        # Get memory after cleanup
+        after_memory = model_manager.memory_monitor.get_memory_info() if model_manager.memory_monitor else None
+        
+        return {
+            "status": "cleanup_completed",
+            "memory_before": before_memory,
+            "memory_after": after_memory,
+            "memory_freed_gb": (before_memory["cached_gb"] - after_memory["cached_gb"]) if (before_memory and after_memory) else 0
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"GPU cleanup failed: {str(e)}")
 
 @app.post("/analyze", response_model=AnalysisResponse)
 async def analyze_meeting(request: MeetingAnalysisRequest):
@@ -830,6 +1505,218 @@ async def cleanup_models():
     """Manually trigger model cleanup"""
     await model_manager.cleanup_unused_models(max_age_hours=0.5)
     return {"status": "cleanup_completed"}
+
+# Enhanced LangChain endpoints
+@app.post("/analyze-enhanced", response_model=AnalysisResponse)
+async def analyze_meeting_enhanced(
+    request: MeetingAnalysisRequest,
+    use_langchain: bool = True
+):
+    """Analyze meeting transcript with LangChain enhancement"""
+    try:
+        from enhanced_service import enhanced_service
+        return await enhanced_service.analyze_meeting(request, use_langchain=use_langchain)
+    except Exception as e:
+        logger.error(f"Enhanced analysis failed: {e}")
+        # Fallback to traditional analysis
+        return await analyze_meeting(request)
+
+@app.post("/analyze-conversation", response_model=Dict[str, Any])
+async def analyze_conversation_intelligent(
+    request: MeetingAnalysisRequest
+):
+    """Intelligently analyze conversation with deep context understanding"""
+    try:
+        logger.info("Starting intelligent conversation analysis...")
+        
+        # Load the conversation analysis model
+        model_info = await model_manager.load_model("google/flan-t5-base", "generation")
+        
+        # Create conversation analyzer
+        from conversation_analyzer import create_conversation_analyzer
+        analyzer = create_conversation_analyzer(model_info)
+        
+        # Perform deep conversation analysis
+        conversation_analysis = await analyzer.analyze_conversation(request.transcript)
+        
+        # Generate intelligent tickets based on conversation context
+        intelligent_tickets = await analyzer.generate_intelligent_tickets(conversation_analysis)
+        
+        # Convert to response format
+        tickets_data = []
+        for ticket in intelligent_tickets:
+            tickets_data.append({
+                "title": ticket.title,
+                "description": ticket.description,
+                "assignee": ticket.assignee,
+                "priority": ticket.priority,
+                "labels": ticket.labels,
+                "dependencies": ticket.dependencies,
+                "acceptance_criteria": ticket.acceptance_criteria,
+                "deadline": ticket.deadline,
+                "context_notes": ticket.context_notes,
+                "confidence": ticket.confidence,
+                "estimated_effort": None
+            })
+        
+        return {
+            "success": True,
+            "conversation_analysis": {
+                "project_context": conversation_analysis.project_context,
+                "team_dynamics": conversation_analysis.team_dynamics,
+                "key_decisions": conversation_analysis.key_decisions,
+                "blockers_and_risks": conversation_analysis.blockers_and_risks,
+                "timeline_constraints": conversation_analysis.timeline_constraints,
+                "technical_requirements": conversation_analysis.technical_requirements,
+                "business_requirements": conversation_analysis.business_requirements
+            },
+            "intelligent_tickets": tickets_data,
+            "insights_analyzed": len(conversation_analysis.conversation_flow),
+            "actionable_insights": len([i for i in conversation_analysis.conversation_flow if i.actionable]),
+            "processing_metadata": {
+                "analysis_method": "intelligent_conversation_analysis",
+                "model_used": "google/flan-t5-base",
+                "langchain_enhanced": True
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Intelligent conversation analysis failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "fallback_suggestion": "Use /analyze-enhanced endpoint for traditional analysis"
+        }
+
+@app.post("/analyze-conversation-smart", response_model=Dict[str, Any])
+async def analyze_conversation_smart(
+    request: MeetingAnalysisRequest
+):
+    """Smart conversation analysis with pattern-based intelligence"""
+    try:
+        logger.info("Starting smart conversation analysis...")
+        
+        # Create simple conversation analyzer (no model required)
+        from simple_conversation_analyzer import create_simple_conversation_analyzer
+        analyzer = create_simple_conversation_analyzer()
+        
+        # Perform smart conversation analysis
+        result = analyzer.analyze_conversation(request.transcript)
+        
+        logger.info(f"Smart analysis completed: {result['insights_analyzed']} insights, {result['actionable_insights']} actionable")
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Smart conversation analysis failed: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "fallback_suggestion": "Use /analyze-enhanced endpoint for traditional analysis"
+        }
+
+@app.post("/generate-ticket-enhanced", response_model=GeneratedTicket)
+async def generate_ticket_enhanced(
+    request: TicketGenerationRequest,
+    use_langchain: bool = True
+):
+    """Generate ticket from action item with LangChain enhancement"""
+    try:
+        from enhanced_service import enhanced_service
+        return await enhanced_service.generate_ticket(request, use_langchain=use_langchain)
+    except Exception as e:
+        logger.error(f"Enhanced ticket generation failed: {e}")
+        # Fallback to traditional generation
+        return await generate_ticket(request)
+
+@app.get("/langchain/status")
+async def langchain_status():
+    """Get LangChain integration status"""
+    try:
+        from enhanced_service import enhanced_service
+        
+        if not enhanced_service.initialized:
+            return {
+                "langchain_models_loaded": 0,
+                "chains_available": 0,
+                "memory_enabled": False,
+                "integration_status": "not_initialized"
+            }
+        
+        return {
+            "langchain_models_loaded": len(enhanced_service.lc_model_manager.langchain_models),
+            "chains_available": len(getattr(enhanced_service.lc_ticket_generator, 'chains', {})),
+            "memory_enabled": enhanced_service.lc_ticket_generator.memory is not None,
+            "integration_status": "active"
+        }
+    except Exception as e:
+        logger.error(f"LangChain status check failed: {e}")
+        return {
+            "langchain_models_loaded": 0,
+            "chains_available": 0,
+            "memory_enabled": False,
+            "integration_status": "error",
+            "error": str(e)
+        }
+
+@app.post("/langchain/clear-memory")
+async def clear_langchain_memory():
+    """Clear LangChain conversation memory"""
+    try:
+        from enhanced_service import enhanced_service
+        
+        if enhanced_service.initialized:
+            if enhanced_service.lc_ticket_generator and enhanced_service.lc_ticket_generator.memory:
+                enhanced_service.lc_ticket_generator.memory.clear()
+            if enhanced_service.lc_meeting_analyzer and enhanced_service.lc_meeting_analyzer.memory:
+                enhanced_service.lc_meeting_analyzer.memory.clear()
+            
+            return {"status": "memory_cleared", "success": True}
+        else:
+            return {"status": "service_not_initialized", "success": False}
+            
+    except Exception as e:
+        logger.error(f"Memory clear failed: {e}")
+        return {"status": "error", "success": False, "error": str(e)}
+
+@app.get("/health-enhanced")
+async def health_check_enhanced():
+    """Enhanced health check with LangChain status"""
+    try:
+        # Get base health check
+        base_health = await health_check()
+        
+        # Add LangChain health information
+        try:
+            from enhanced_service import enhanced_service
+            
+            langchain_health = {
+                "langchain_available": True,
+                "langchain_models": len(enhanced_service.lc_model_manager.langchain_models) if enhanced_service.initialized else 0,
+                "chains_initialized": enhanced_service.lc_ticket_generator is not None if enhanced_service.initialized else False,
+                "memory_active": (enhanced_service.lc_ticket_generator.memory is not None) if enhanced_service.initialized and enhanced_service.lc_ticket_generator else False,
+                "enhanced_service_status": "active" if enhanced_service.initialized else "inactive"
+            }
+        except Exception as e:
+            langchain_health = {
+                "langchain_available": False,
+                "langchain_models": 0,
+                "chains_initialized": False,
+                "memory_active": False,
+                "enhanced_service_status": "error",
+                "error": str(e)
+            }
+        
+        base_health.update(langchain_health)
+        return base_health
+        
+    except Exception as e:
+        logger.error(f"Enhanced health check failed: {e}")
+        return {
+            "status": "error",
+            "langchain_available": False,
+            "error": str(e)
+        }
 
 # Background tasks
 async def periodic_cleanup():

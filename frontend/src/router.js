@@ -1,8 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import GitHubIntegration from './views/GitHubIntegration.vue';
 import Upload from './views/Upload.vue';
+import BacklogWorkflow from './views/BacklogWorkflow.vue';
 
 const routes = [
+  {
+    path: '/workflow',
+    name: 'BacklogWorkflow',
+    component: BacklogWorkflow
+  },
   {
     path: '/upload',
     name: 'Upload',
@@ -15,7 +21,7 @@ const routes = [
   },
   {
     path: '/',
-    redirect: '/upload'
+    redirect: '/workflow'
   }
 ];
 

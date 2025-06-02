@@ -8,6 +8,7 @@ services:
       - "3001:3001"
     environment:
       - NODE_ENV=development
+      - PORT=3001
       - PREFER_LOCAL_AI=false
       - REDIS_URL=redis://redis:6379
       - DATABASE_URL=postgresql://backlog_user:${POSTGRES_PASSWORD}@postgres:5432/backlog_builder
@@ -36,7 +37,7 @@ services:
       - /usr/src/app/node_modules
     environment:
       - NODE_ENV=development
-      - VUE_APP_API_URL=http://localhost:3001
+      - VUE_APP_API_URL=http://backend:3001
     stdin_open: true
     tty: true
     depends_on:

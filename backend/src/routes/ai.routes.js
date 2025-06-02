@@ -140,6 +140,13 @@ router.post('/analyze', AIController.analyzeMeeting.bind(AIController));
 router.post('/generate-tickets', AIController.generateTickets.bind(AIController));
 
 /**
+ * @route POST /api/ai/analyze-conversation-smart
+ * @desc Smart conversation analysis with intelligent ticket generation
+ * @access Private
+ */
+router.post('/analyze-conversation-smart', AIController.analyzeConversationSmart.bind(AIController));
+
+/**
  * @route GET /api/ai/progress/:jobId
  * @desc Get processing progress for long-running AI jobs
  * @access Private

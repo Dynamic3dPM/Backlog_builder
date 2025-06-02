@@ -34,7 +34,7 @@ class Config:
     WHISPER_MODELS = ["tiny", "base", "small", "medium", "large"]
     DEFAULT_MODEL = "base"
     MAX_FILE_SIZE = 500 * 1024 * 1024  # 500MB
-    SUPPORTED_FORMATS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm"}
+    SUPPORTED_FORMATS = {".wav", ".mp3", ".m4a", ".flac", ".ogg", ".webm", ".mp4"}
     CACHE_TTL = 3600  # 1 hour
     REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
     GPU_ENABLED = torch.cuda.is_available()
@@ -306,8 +306,24 @@ async def transcribe_file(
         content = await file.read()
         temp_file.write(content)
         temp_file_path = temp_file.name
-    
+    extracted_audio_path = None
     try:
+        # If mp4, extract audio to wav
+        if file_extension == ".mp4":
+            import subprocess
+            extracted_audio_path = tempfile.NamedTemporaryFile(delete=False, suffix='.wav').name
+            ffmpeg_cmd = [
+                "ffmpeg", "-y", "-i", temp_file_path, "-vn", "-acodec", "pcm_s16le", "-ar", "16000", "-ac", "1", extracted_audio_path
+            ]
+            proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            if proc.returncode != 0:
+                os.unlink(temp_file_path)
+                if extracted_audio_path:
+                    os.unlink(extracted_audio_path)
+                raise HTTPException(status_code=500, detail=f"ffmpeg audio extraction failed: {proc.stderr.decode()}")
+            audio_path_for_transcription = extracted_audio_path
+        else:
+            audio_path_for_transcription = temp_file_path
         request = TranscriptionRequest(
             language=language,
             task=task,
@@ -315,17 +331,17 @@ async def transcribe_file(
             model_size=model_size,
             return_timestamps=return_timestamps
         )
-        
-        result = await transcribe_audio(temp_file_path, request)
-        
+        result = await transcribe_audio(audio_path_for_transcription, request)
         # Schedule cleanup
         background_tasks.add_task(os.unlink, temp_file_path)
-        
+        if extracted_audio_path:
+            background_tasks.add_task(os.unlink, extracted_audio_path)
         return result
-        
     except Exception as e:
         # Cleanup on error
         os.unlink(temp_file_path)
+        if extracted_audio_path:
+            os.unlink(extracted_audio_path)
         raise
 
 @app.websocket("/transcribe-ws")

@@ -301,18 +301,65 @@ class TicketGeneratorService {
     generateMeetingTitle(analysisResult) {
         const date = new Date().toLocaleDateString();
         const participants = analysisResult.participants?.length || 0;
-        return `Meeting Summary - ${date} (${participants} participants)`;
+        
+        // Try to extract a meaningful title from the summary
+        let title = 'Meeting Summary';
+        
+        if (analysisResult.summary?.executive_summary) {
+            const summary = analysisResult.summary.executive_summary;
+            // Extract the first meaningful phrase (up to 50 chars)
+            const firstSentence = summary.split(/[.!?]/)[0].trim();
+            if (firstSentence.length > 10 && firstSentence.length <= 50) {
+                title = firstSentence;
+            } else if (firstSentence.length > 50) {
+                // Extract key words/phrases
+                const words = firstSentence.split(' ').slice(0, 8).join(' ');
+                title = words + (words.length < firstSentence.length ? '...' : '');
+            }
+        }
+        
+        // Add contextual info
+        const actionCount = analysisResult.actionItems?.length || 0;
+        const decisionCount = analysisResult.decisions?.length || 0;
+        
+        if (actionCount > 0 || decisionCount > 0) {
+            title += ` (${actionCount} tasks, ${decisionCount} decisions)`;
+        } else {
+            title += ` - ${date}`;
+        }
+        
+        return title;
     }
 
     formatSummaryDescription(analysisResult) {
-        let description = '## Meeting Summary\n\n';
+        let description = 'Meeting Summary\n\n';
         
         if (analysisResult.summary) {
-            description += `${analysisResult.summary}\n\n`;
+            // Handle summary object properly
+            if (typeof analysisResult.summary === 'string') {
+                description += `${analysisResult.summary}\n\n`;
+            } else if (analysisResult.summary.executive_summary) {
+                description += `${analysisResult.summary.executive_summary}\n\n`;
+                
+                // Add key points if available
+                if (analysisResult.summary.key_points?.length > 0) {
+                    description += 'Key Points\n';
+                    analysisResult.summary.key_points.forEach(point => {
+                        description += `- ${point}\n`;
+                    });
+                    description += '\n';
+                }
+                
+                // Add topics discussed if available
+                if (analysisResult.summary.topics_discussed?.length > 0) {
+                    description += 'Topics Discussed\n';
+                    description += analysisResult.summary.topics_discussed.join(', ') + '\n\n';
+                }
+            }
         }
 
         if (analysisResult.keyPoints?.length > 0) {
-            description += '## Key Points\n';
+            description += 'Key Points\n';
             analysisResult.keyPoints.forEach(point => {
                 description += `- ${point}\n`;
             });
@@ -320,27 +367,42 @@ class TicketGeneratorService {
         }
 
         if (analysisResult.participants?.length > 0) {
-            description += '## Participants\n';
+            description += 'Participants\n';
             description += analysisResult.participants.join(', ') + '\n\n';
         }
 
         if (analysisResult.actionItems?.length > 0) {
-            description += `## Generated ${analysisResult.actionItems.length} action item tickets\n\n`;
+            description += `Generated ${analysisResult.actionItems.length} action item tickets\n\n`;
         }
 
         if (analysisResult.decisions?.length > 0) {
-            description += `## Generated ${analysisResult.decisions.length} decision tickets\n\n`;
+            description += `Generated ${analysisResult.decisions.length} decision tickets\n\n`;
         }
 
         return description;
     }
 
     formatActionItemTitle(actionItem) {
-        let title = actionItem.title || actionItem.action || actionItem.text || 'Action Item';
+        // Handle different action item formats from AI analysis
+        let title = actionItem.task || actionItem.title || actionItem.action || actionItem.text || 'Action Item';
         
-        // Truncate if too long
+        // Clean up the title - remove leading/trailing whitespace and periods
+        title = title.trim().replace(/^[.\s]+|[.\s]+$/g, '');
+        
+        // If title is too long, extract the main action
         if (title.length > 100) {
-            title = title.substring(0, 97) + '...';
+            // Try to extract the first sentence or main action
+            const sentences = title.split(/[.!?]/);
+            if (sentences.length > 1 && sentences[0].length <= 100) {
+                title = sentences[0].trim();
+            } else {
+                title = title.substring(0, 97) + '...';
+            }
+        }
+
+        // Ensure title starts with capital letter
+        if (title.length > 0) {
+            title = title.charAt(0).toUpperCase() + title.slice(1);
         }
 
         return title;
@@ -349,23 +411,42 @@ class TicketGeneratorService {
     formatActionItemDescription(actionItem) {
         let description = '';
 
+        // Add the main task description
+        if (actionItem.task) {
+            description += `${actionItem.task.trim()}\n\n`;
+        }
+
+        // Add additional details if available
         if (actionItem.description || actionItem.details) {
-            description += `${actionItem.description || actionItem.details}\n\n`;
+            description += `Details: ${actionItem.description || actionItem.details}\n\n`;
         }
 
+        // Add metadata in a clean format
         if (actionItem.assignee) {
-            description += `**Assigned to:** ${actionItem.assignee}\n`;
+            description += `Assigned to: ${actionItem.assignee}\n`;
         }
 
-        if (actionItem.dueDate) {
-            description += `**Due Date:** ${actionItem.dueDate}\n`;
+        if (actionItem.deadline || actionItem.dueDate) {
+            description += `Due Date: ${actionItem.deadline || actionItem.dueDate}\n`;
+        }
+
+        if (actionItem.priority) {
+            description += `Priority: ${actionItem.priority}\n`;
+        }
+
+        if (actionItem.dependencies && actionItem.dependencies.length > 0) {
+            description += `Dependencies: ${actionItem.dependencies.join(', ')}\n`;
+        }
+
+        if (actionItem.confidence) {
+            description += `AI Confidence: ${Math.round(actionItem.confidence * 100)}%\n`;
         }
 
         if (actionItem.context) {
-            description += `**Context:** ${actionItem.context}\n`;
+            description += `\nContext: ${actionItem.context}\n`;
         }
 
-        return description;
+        return description.trim();
     }
 
     formatDecisionTitle(decision) {
@@ -386,15 +467,15 @@ class TicketGeneratorService {
         }
 
         if (decision.rationale) {
-            description += `**Rationale:** ${decision.rationale}\n\n`;
+            description += `Rationale: ${decision.rationale}\n\n`;
         }
 
         if (decision.impact) {
-            description += `**Impact:** ${decision.impact}\n\n`;
+            description += `Impact: ${decision.impact}\n\n`;
         }
 
         if (decision.participants?.length > 0) {
-            description += `**Decision Makers:** ${decision.participants.join(', ')}\n\n`;
+            description += `Decision Makers: ${decision.participants.join(', ')}\n\n`;
         }
 
         return description;
@@ -630,10 +711,10 @@ class TicketGeneratorService {
     }
 
     formatTopicDescription(topic, items, analysisResult) {
-        let description = `## Epic: ${topic}\n\n`;
+        let description = `Epic: ${topic}\n\n`;
         description += `This epic encompasses ${items.length} related items from the meeting analysis.\n\n`;
         
-        description += '### Related Items:\n';
+        description += 'Related Items:\n';
         items.forEach((item, index) => {
             description += `${index + 1}. ${item.text || item.description}\n`;
         });

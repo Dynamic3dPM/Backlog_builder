@@ -1,5 +1,8 @@
 # Hugging Face Local LLM Processing Service
-FROM python:3.9-slim
+FROM pytorch/pytorch:2.0.1-cuda11.7-cudnn8-devel
+
+# Set environment variables
+ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
@@ -14,7 +17,7 @@ RUN apt-get update && apt-get install -y \
 # Copy requirements first for better caching
 COPY requirements.txt .
 
-# Install Python dependencies
+# Install Python dependencies (PyTorch already included in base image)
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install NLTK data
