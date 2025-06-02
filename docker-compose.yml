@@ -69,6 +69,51 @@ services:
     networks:
       - backlog-network
 
+  # Whisper Speech-to-Text Service
+  whisper-stt:
+    build:
+      context: ./ai-services/speech-to-text
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - REDIS_URL=redis://redis:6379
+    volumes:
+      - ./ai-services/speech-to-text:/app
+      - whisper-models:/root/.cache/whisper
+    networks:
+      - backlog-network
+    depends_on:
+      - redis
+    # Uncomment the following if you want to build models during container startup
+    # command: >
+    #   sh -c "python -c 'import whisper; whisper.load_model(\"base\")' &&
+    #   uvicorn whisper-local:app --host 0.0.0.0 --port 8000"
+
+  # Hugging Face Local LLM Service
+  huggingface-llm:
+    build:
+      context: ./ai-services/llm-processing
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - PORT=8002
+      - REDIS_URL=redis://redis:6379
+      - DEVICE=cuda  # or cpu if no GPU available
+    volumes:
+      - ./ai-services/llm-processing:/app
+      - huggingface-models:/root/.cache/huggingface/hub
+    networks:
+      - backlog-network
+    depends_on:
+      - redis
+    # Uncomment and modify the following if you want to pre-download models
+    # command: >
+    #   sh -c "python -c 'from transformers import AutoModelForSeq2SeqLM; AutoModelForSeq2SeqLM.from_pretrained(\"facebook/bart-large-cnn\")' &&
+    #   uvicorn huggingface-local:app --host 0.0.0.0 --port 8002"
+
 networks:
   backlog-network:
     driver: bridge
@@ -77,3 +122,5 @@ volumes:
   postgres_data:
   uploads:
   backend-logs:
+  whisper-models:
+  huggingface-models:
