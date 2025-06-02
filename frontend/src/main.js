@@ -1,9 +1,17 @@
 import { createApp } from 'vue';
 import App from './App.vue';
 import router from './router';
+import axios from 'axios';
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap';
-import Vue3Toastify from 'vue3-toastify';
+
+// Dynamically load Bootstrap Icons CSS
+const link = document.createElement('link');
+link.href = 'https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css';
+link.rel = 'stylesheet';
+document.head.appendChild(link);
+
+import Toast from 'vue3-toastify';
 import 'vue3-toastify/dist/index.css';
 import './assets/styles/main.css';
 
@@ -12,18 +20,19 @@ const app = createApp(App);
 // Configure toast options
 const toastOptions = {
   position: 'top-right',
-  timeout: 5000,
+  autoClose: 5000,
+  hideProgressBar: false,
   closeOnClick: true,
-  pauseOnFocusLoss: true,
   pauseOnHover: true,
   draggable: true,
-  draggablePercent: 60,
-  hideProgressBar: false,
-  icon: true,
+  progress: undefined,
 };
 
 // Add plugins
 app.use(router);
-app.use(Vue3Toastify, toastOptions);
+app.use(Toast, toastOptions);
+
+// Add axios to the global properties
+app.config.globalProperties.$http = axios;
 
 app.mount('#app');
